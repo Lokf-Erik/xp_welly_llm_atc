@@ -30,6 +30,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
+#include <ctime>
 #include <optional>
 #include <regex>
 #include <unordered_map>
@@ -92,6 +93,12 @@ static int s_enroute_cleared_alt_ft =
     0; // ATC-cleared cruise altitude (0 = unknown)
 static float s_enroute_alt_warn_cooldown =
     0.0f; // countdown between altitude warnings
+// Step-1 altitude verification: fires 30-60 s after a descent/climb clearance
+// when the aircraft has NOT started moving toward the new target (vertical
+// speed ~0). Comes before the step-2 "check altitude" deviation warning.
+// Reset by every clearance that sets s_enroute_alt_warn_cooldown = 180.
+static bool  s_enroute_verify_query_sent = false;
+static int   s_enroute_verify_target_ft  = 0; // altitude at time of last clearance
 // Set to true when the pilot says "request descent" in IFR_ENROUTE_CRUISE.
 // Consumed by poll_enroute on the next frame to issue the descent clearance.
 static bool s_pilot_requested_descent = false;
@@ -619,16 +626,61 @@ void process_transcript(Input in, Done done) {
     }
   }
 
-  // Sector check-in detection: clear the pending flag the first time the pilot
-  // transmits on the new sector frequency after a handoff instruction.
+  // Sector check-in detection: the first pilot transmission on the new sector
+  // frequency after a handoff instruction. Two responsibilities:
+  //   (1) clear s_sector_checkin_pending so poll_* loops resume proactive
+  //       messages (descent step-downs, sector handoffs, etc.);
+  //   (2) MUST emit an acknowledgment — real ATC never lets a check-in on a
+  //       new frequency go unanswered. Silent clears in the past led to the
+  //       pilot repeating the call three or four times with no reply
+  //       (see feedback_sector_checkin_ack).
+  //
+  // Exception: the initial Approach check-in (IFR_APPROACH_CONTACT) and the
+  // Tower/AFIS check-in (IFR_APPROACH_TOWER) have their own richer handlers
+  // below that produce a full clearance ("radar contact, identified, direct
+  // X, RNAV approach RWY Y, descend Z feet, QNH W" / "runway X, cleared to
+  // land"). For those states, only clear the flag here and let the specific
+  // handler emit the response.
+  bool sector_checkin_just_fired = false;
   if (s_sector_checkin_pending && s_pending_handoff_freq_mhz > 0.0f) {
     const float active = ctx.active_com == 2 ? ctx.com2_freq_mhz : ctx.com1_freq_mhz;
     if (std::fabs(active - s_pending_handoff_freq_mhz) < 0.005f) {
       s_sector_checkin_pending = false;
+      sector_checkin_just_fired = true;
       logging::info("Sector checkin: pilot first call on %.3f MHz -- resuming proactive messages",
                     active);
+      using AS = atc_state_machine::ATCState;
+      const auto ck_state = atc_state_machine::get_state();
+      // Frequency-based defer: if the pilot's new frequency matches the
+      // Approach controller (s_enroute_approach_freq_mhz was set by the
+      // Approach handoff), this IS the Approach check-in — real ATC would
+      // give the full clearance ("radar contact, identified, direct IAF,
+      // RNAV approach RWY X, descend Y feet, QNH Z"), not just a bare
+      // radar-contact ack. Same for Tower check-ins.
+      const bool is_approach_freq =
+          s_enroute_approach_freq_mhz > 100.0f &&
+          std::fabs(active - s_enroute_approach_freq_mhz) < 0.010f;
+      const bool defer_to_richer_handler =
+          ck_state == AS::IFR_APPROACH_CONTACT ||
+          ck_state == AS::IFR_APPROACH_TOWER   ||
+          is_approach_freq;
+      if (!defer_to_richer_handler) {
+        const std::string &cs_ref_ck = atc_state_machine::session_callsign();
+        const std::string &cs_ck =
+            cs_ref_ck.empty() ? in.pilot_callsign : cs_ref_ck;
+        char ack_buf[128];
+        std::snprintf(ack_buf, sizeof(ack_buf),
+                      "%s, radar contact.", cs_ck.c_str());
+        logging::info("Sector checkin ack: %s (state=%s)",
+                      ack_buf, atc_state_machine::state_name(ck_state));
+        Output out_ck;
+        out_ck.response_text = ack_buf;
+        done(std::move(out_ck));
+        return;
+      }
     }
   }
+  (void)sector_checkin_just_fired;
 
   // Parse intent
   auto parsed = intent_parser::parse(in.transcript, ctx);
@@ -660,6 +712,7 @@ void process_transcript(Input in, Done done) {
       if (parsed.intent == PI2::INITIAL_CALL         ||
           parsed.intent == PI2::INITIAL_CALL_INBOUND ||
           parsed.intent == PI2::INITIAL_CALL_TOWER   ||
+          parsed.intent == PI2::INITIAL_CALL_CENTER  ||
           parsed.intent == PI2::RADIO_CHECK          ||
           parsed.intent == PI2::UNKNOWN) {
         logging::info("Freq override: %s on %s -> INITIAL_CALL_APPROACH",
@@ -813,10 +866,20 @@ void process_transcript(Input in, Done done) {
       parsed.intent == PI::INITIAL_CALL           ||
       parsed.intent == PI::INITIAL_CALL_INBOUND   ||
       parsed.intent == PI::UNKNOWN;
+  // State gate: normally the Approach check-in fires in IFR_APPROACH_CONTACT
+  // (the state the plugin sets after issuing "contact Approach"). Also
+  // accepted: IFR_DESCENT — when the aircraft is still descending under
+  // Centre when it crosses into the Approach sector, the pilot may check in
+  // on the Approach freq while the plugin's state hasn't auto-advanced yet.
+  // The frequency gate above already confirms the pilot IS on the Approach
+  // freq, so firing the full clearance here is correct.
+  const auto ck_st = atc_state_machine::get_state();
+  const bool checkin_state_ok =
+      ck_st == atc_state_machine::ATCState::IFR_APPROACH_CONTACT ||
+      ck_st == atc_state_machine::ATCState::IFR_DESCENT;
   if (is_initial_call_any &&
       on_approach_freq &&
-      atc_state_machine::get_state() ==
-          atc_state_machine::ATCState::IFR_APPROACH_CONTACT) {
+      checkin_state_ok) {
     using AS = atc_state_machine::ATCState;
     const std::string &cs_ref = atc_state_machine::session_callsign();
     const std::string cs = cs_ref.empty() ? in.pilot_callsign : cs_ref;
@@ -900,6 +963,11 @@ void process_transcript(Input in, Done done) {
           // Persist the CIFP runway so Tower uses the correct landing runway
           // regardless of which airport ctx.active_runway points to.
           s_assigned_landing_runway = appr.runway;
+          // Also push into the state machine so template-lookup {runway}
+          // resolves to the assigned CIFP runway, not ctx.active_runway
+          // (which can be wind-selected for the wrong end, e.g. RWY 07 approach
+          // vs RWY 29 wind-favoured on calm-wind days).
+          atc_state_machine::set_assigned_runway(appr.runway);
           // Look up FAF position so poll_approach() can trigger Tower handoff.
           if (!appr.designator.empty()) {
             s_approach_faf = cifp_reader::approach_faf(
@@ -998,6 +1066,7 @@ void process_transcript(Input in, Done done) {
           ctx.cifp_dir, s_assigned_dest_icao, s_assigned_approach_designator);
       if (!appr_ns.type_str.empty()) {
         s_assigned_landing_runway = appr_ns.runway;
+        atc_state_machine::set_assigned_runway(appr_ns.runway);
         if (s_approach_faf.ident.empty())
           s_approach_faf = cifp_reader::approach_faf(
               ctx.cifp_dir, s_assigned_dest_icao, appr_ns.designator);
@@ -1247,14 +1316,21 @@ void process_transcript(Input in, Done done) {
     return;
   }
 
-  // IFR Tower check-in: pilot contacts Tower after Approach hands off.
-  // INITIAL_CALL_TOWER / INITIAL_CALL in IFR_APPROACH_TOWER → landing clearance.
-  // Without this handler the VFR phase precondition fires "already airborne".
-  // Frequency guard: readbacks on the Approach freq that get mis-classified
-  // as INITIAL_CALL must not trigger a premature clearance — only fire when
-  // the pilot has switched to the Tower frequency.
-  if ((parsed.intent == PI::INITIAL_CALL_TOWER ||
-       parsed.intent == PI::INITIAL_CALL) &&
+  // IFR Tower/AFIS check-in: pilot contacts Tower (or Information/AFIS at
+  // non-towered destinations, e.g. LFQA "Reims Prunay Information") after
+  // Approach hands off. Any initial-call variant OR unknown/unrecognised
+  // transmission in IFR_APPROACH_TOWER on the tower freq fires the handler —
+  // state + frequency gates are tight enough to prevent false positives
+  // (covers "Reims Information" and "Prunay Information" facility names
+  // which don't match any INITIAL_CALL_* rule, plus Voxtral garbles like
+  // "Pass information").
+  const bool is_tower_call_any =
+      parsed.intent == PI::INITIAL_CALL_TOWER   ||
+      parsed.intent == PI::INITIAL_CALL         ||
+      parsed.intent == PI::INITIAL_CALL_APPROACH ||
+      parsed.intent == PI::INITIAL_CALL_INBOUND ||
+      parsed.intent == PI::UNKNOWN;
+  if (is_tower_call_any &&
       atc_state_machine::get_state() ==
           atc_state_machine::ATCState::IFR_APPROACH_TOWER) {
     // Frequency guard: readbacks on the Approach freq mis-classified as
@@ -1284,8 +1360,12 @@ void process_transcript(Input in, Done done) {
       std::snprintf(buf_at, sizeof(buf_at),
                     "%s, runway %s, cleared to land, wind %03d degrees %02d knots.",
                     cs_at.c_str(), rwy_at.c_str(), wind_dir, wind_kt);
-      s_current_controller_label =
-          s_assigned_dest_icao.empty() ? "Tower" : (s_assigned_dest_icao + " Tower");
+      // Preserve the label set by the sector-exit handoff (e.g. "Reims
+      // Prunay Information" for AFIS destinations). Only fall back to a
+      // generic "Tower" label if nothing was set upstream.
+      if (s_current_controller_label.empty())
+        s_current_controller_label =
+            s_assigned_dest_icao.empty() ? "Tower" : (s_assigned_dest_icao + " Tower");
       atc_state_machine::set_state(ASt::IFR_LANDING_CLEARED);
       Output out_at;
       out_at.parsed = parsed;
@@ -1300,6 +1380,90 @@ void process_transcript(Input in, Done done) {
     out_ap.response_text = "";  // silent ack — pilot is reading back the handoff
     done(std::move(out_ap));
     return;
+  }
+
+  // IFR flight-plan closure at destination.
+  // Trigger: state IFR/LANDING_CLEARED (i.e. aircraft has landed IFR and
+  // cleared the runway) + pilot's transmission signals arrival at
+  // parking / leaving the frequency. Distinguish AFIS vs towered:
+  //   - AFIS (no Ground freq at destination) → AFIS cannot close IFR;
+  //     the pilot must call the ARO by telephone. Reply "leaving frequency
+  //     approved, contact <airport> by telephone to close IFR flight plan."
+  //   - Towered → controller closes the flight plan automatically on
+  //     landing. Reply "IFR flight plan closed at HH:MM, good day."
+  // Fires for LEAVING_FREQUENCY, REPORT_POSITION, REQUEST_TAXI_PARKING (a
+  // misclassification post-landing at parking), or UNKNOWN utterances that
+  // contain a "parking / at stand / leaving" keyword.
+  if (atc_state_machine::get_state() ==
+          atc_state_machine::ATCState::IFR_LANDING_CLEARED &&
+      ctx.on_ground) {
+    const std::string &tx = in.transcript;
+    auto tx_contains = [&](const char *needle) {
+      if (!needle) return false;
+      const std::string n = needle;
+      auto lower = tx;
+      for (auto &c : lower)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+      return lower.find(n) != std::string::npos;
+    };
+    const bool closure_intent =
+        parsed.intent == PI::LEAVING_FREQUENCY ||
+        parsed.intent == PI::REPORT_POSITION   ||
+        parsed.intent == PI::REQUEST_TAXI_PARKING;
+    const bool closure_keyword =
+        tx_contains("at parking") || tx_contains("on parking") ||
+        tx_contains("at the parking") || tx_contains("on stand") ||
+        tx_contains("at stand") || tx_contains("at the stand") ||
+        tx_contains("leaving frequency") || tx_contains("leave the frequency") ||
+        tx_contains("leave frequency") || tx_contains("shut down") ||
+        tx_contains("close ifr") || tx_contains("close flight plan");
+    if (closure_intent || closure_keyword) {
+      const std::string &cs_ifr_ref = atc_state_machine::session_callsign();
+      const std::string cs_ifr =
+          cs_ifr_ref.empty() ? in.pilot_callsign : cs_ifr_ref;
+      // Destination classification: no Ground freq → AFIS/Information.
+      const std::string dest =
+          !s_assigned_dest_icao.empty() ? s_assigned_dest_icao
+                                        : ctx.nearest_airport_id;
+      const bool is_afis =
+          !xplane_context::has_ground_freq_for(dest);
+      char buf_cl[256];
+      if (is_afis) {
+        // Prefer airport name over ICAO in the spoken phrase.
+        std::string apt =
+            !dest.empty() ? xplane_context::airport_name_for(dest) : "";
+        if (apt.empty()) apt = dest.empty() ? "the ARO" : dest;
+        std::snprintf(buf_cl, sizeof(buf_cl),
+                      "%s, leaving frequency approved, contact %s "
+                      "by telephone to close IFR flight plan, good day.",
+                      cs_ifr.c_str(), apt.c_str());
+      } else {
+        // Towered: controller closes the FPL automatically on landing.
+        // Use current sim UTC time for the closure stamp.
+        std::time_t now_t = std::time(nullptr);
+        std::tm *utc = std::gmtime(&now_t);
+        char hhmm[8] = "";
+        if (utc)
+          std::snprintf(hhmm, sizeof(hhmm), "%02d%02d",
+                        utc->tm_hour, utc->tm_min);
+        if (hhmm[0])
+          std::snprintf(buf_cl, sizeof(buf_cl),
+                        "%s, IFR flight plan closed at %s, good day.",
+                        cs_ifr.c_str(), hhmm);
+        else
+          std::snprintf(buf_cl, sizeof(buf_cl),
+                        "%s, IFR flight plan closed, good day.",
+                        cs_ifr.c_str());
+      }
+      atc_state_machine::set_state(atc_state_machine::ATCState::IDLE);
+      logging::info("IFR closure at %s (%s): %s", dest.c_str(),
+                    is_afis ? "AFIS" : "towered", buf_cl);
+      Output out_cl;
+      out_cl.parsed = parsed;
+      out_cl.response_text = buf_cl;
+      done(std::move(out_cl));
+      return;
+    }
   }
 
   // ── LM-not-ready fast path ────────────────────────────────────────
@@ -3323,6 +3487,30 @@ bool poll_enroute(const xplane_context::XPlaneContext &ctx, float dt,
           s_current_controller_label = new_label;
           float new_freq_mhz = static_cast<float>(new_freq_khz) / 1000.0f;
           s_pending_handoff_freq_mhz = new_freq_mhz;
+          // When the new sector is a TRACON (Approach controller), update
+          // the "active approach freq" gate so the check-in handler only
+          // fires when the pilot actually switches. Without this, the
+          // fallback (s_enroute_approach_freq_mhz < 100 → accept any freq)
+          // makes the check-in fire on the OLD frequency the pilot never
+          // left.
+          if (best->role == airspace_db::ControllerRole::TRACON)
+            s_enroute_approach_freq_mhz = new_freq_mhz;
+          // Suppress announcement if the pilot is already on the new
+          // sector's frequency. Common after the aircraft re-enters an
+          // earlier sector (e.g. drifts out of Melun TMA back into Paris
+          // CTR) whose frequency happens to match the pilot's active COM:
+          // no switch is needed, so the "contact X on Y" phrase would be
+          // spoken while the pilot is already there.
+          const float active_com_now =
+              (ctx.active_com == 2) ? ctx.com2_freq_mhz : ctx.com1_freq_mhz;
+          const bool already_on_new_freq =
+              std::fabs(active_com_now - new_freq_mhz) < 0.005f;
+          if (already_on_new_freq) {
+            s_sector_checkin_pending = false;
+            logging::info("IFR en-route: sector change -> %s %.3f MHz (pilot already on freq -- silent)",
+                          new_label.c_str(), new_freq_mhz);
+            return false;  // no announcement, no state change
+          }
           s_sector_checkin_pending = true;
           if (out_text) {
             const std::string &cs_s = atc_state_machine::session_callsign();
@@ -3476,6 +3664,8 @@ bool poll_enroute(const xplane_context::XPlaneContext &ctx, float dt,
                       "IFR en-route: last navlog descent at %s (%.0f NM) -> build_descent_clearance",
                       next_fix.ident.c_str(), dist_nm);
                   s_enroute_alt_warn_cooldown = 180.0f;
+                  s_enroute_verify_query_sent = false;
+                  s_enroute_verify_target_ft  = step_fl * 100;
                   if (build_descent_clearance(ctx, callsign, defaults, out_text)) {
                     rb(true);
                     return true;
@@ -3516,6 +3706,8 @@ bool poll_enroute(const xplane_context::XPlaneContext &ctx, float dt,
                               step_fl, next_fix.ident.c_str(), dist_nm, tl / 100);
               }
               s_enroute_alt_warn_cooldown = 180.0f;
+              s_enroute_verify_query_sent = false;
+              s_enroute_verify_target_ft  = s_enroute_cleared_alt_ft;
               rb(true);
               return true;
             }
@@ -3642,6 +3834,8 @@ bool poll_enroute(const xplane_context::XPlaneContext &ctx, float dt,
                     step_fl, d, tl2 / 100);
               }
               s_enroute_alt_warn_cooldown = 180.0f;
+              s_enroute_verify_query_sent = false;
+              s_enroute_verify_target_ft  = s_enroute_cleared_alt_ft;
               rb(true);
               issued_step = true;
             }
@@ -3775,34 +3969,93 @@ bool poll_enroute(const xplane_context::XPlaneContext &ctx, float dt,
   // poll_enroute() only runs in IFR_ENROUTE_CRUISE; poll_descent() takes over
   // in IFR_DESCENT once build_descent_clearance() has fired.
 
+  // ── Sub-phase 2.4: altitude verification query (soft) ──────────────────
+  // Fires 45-100 s after a descent/climb clearance when the aircraft has
+  // NOT started moving toward the target (|vs| < 200 fpm) and is still
+  // >= 500 ft off the assigned altitude but under the hard-deviation
+  // threshold. Standard EUROCONTROL courtesy prompt used before the harder
+  // "check altitude" warning — catches missed clearances (STT drop, pilot
+  // distraction) before they escalate. Fires once per clearance.
+  s_enroute_alt_warn_cooldown =
+      std::max(0.0f, s_enroute_alt_warn_cooldown - dt);
+  if (!s_enroute_verify_query_sent && s_enroute_verify_target_ft > 0 &&
+      s_enroute_alt_warn_cooldown > 80.0f &&
+      s_enroute_alt_warn_cooldown < 135.0f &&
+      !atc_state_machine::is_readback_pending()) {
+    const int ta_v = (ctx.transition_alt_ft > 0) ? ctx.transition_alt_ft : 5000;
+    const bool tgt_is_fl = (s_enroute_verify_target_ft > ta_v);
+    const int actual_v = tgt_is_fl ? static_cast<int>(ctx.pressure_alt_ft)
+                                    : static_cast<int>(ctx.altitude_ft_msl);
+    const int diff_v = actual_v - s_enroute_verify_target_ft;
+    if (std::abs(diff_v) >= 500 && std::abs(diff_v) < 800 &&
+        std::abs(ctx.vertical_speed_fpm) < 200.0f) {
+      s_enroute_verify_query_sent = true;
+      if (out_text) {
+        char buf[160];
+        const char *verb = (diff_v > 0) ? "descending" : "climbing";
+        if (tgt_is_fl)
+          std::snprintf(buf, sizeof(buf),
+                        "%s, confirm %s flight level %d.",
+                        callsign.c_str(), verb,
+                        s_enroute_verify_target_ft / 100);
+        else
+          std::snprintf(buf, sizeof(buf),
+                        "%s, confirm %s %d feet.",
+                        callsign.c_str(), verb,
+                        s_enroute_verify_target_ft);
+        *out_text = buf;
+      }
+      logging::info("IFR en-route: verify query -> target=%d diff=%+d VS=%.0f fpm",
+                    s_enroute_verify_target_ft, diff_v, ctx.vertical_speed_fpm);
+      return true;
+    }
+  }
+
   // ── Sub-phase 2.5: cruise altitude deviation warning ──────────────────
   // RVSM (FL290+): threshold 200 ft. Below FL290: 300 ft (ICAO standard).
   // 2-minute cooldown between warnings. Grace period of 60 s after check-in
   // so the aircraft has time to level off before monitoring begins.
   // Suppressed once descent clearance has been issued.
-  s_enroute_alt_warn_cooldown =
-      std::max(0.0f, s_enroute_alt_warn_cooldown - dt);
   if (!s_enroute_descent_issued && s_enroute_cleared_alt_ft > 0 &&
       s_enroute_timer >= 60.0f && s_enroute_alt_warn_cooldown <= 0.0f &&
       !atc_state_machine::is_readback_pending()) {
-    // FL clearances use pressure altitude (1013.25 hPa reference), not GPS/MSL.
-    int actual_ft = static_cast<int>(ctx.pressure_alt_ft);
+    // FL clearances (above TA) use pressure altitude (1013.25 hPa reference);
+    // feet clearances (below TA) use QNH MSL altitude. Same rule as the pilot's
+    // altimeter — comparing pressure vs QNH would produce a phantom deviation
+    // equal to the QNH-standard offset (~740 ft at QNH 1025).
+    const int ta_dev = (ctx.transition_alt_ft > 0) ? ctx.transition_alt_ft : 5000;
+    const bool cleared_is_fl = (s_enroute_cleared_alt_ft > ta_dev);
+    const int actual_ft = cleared_is_fl
+                              ? static_cast<int>(ctx.pressure_alt_ft)
+                              : static_cast<int>(ctx.altitude_ft_msl);
     int deviation_ft = actual_ft - s_enroute_cleared_alt_ft;
     int threshold_ft = (s_enroute_cleared_alt_ft >= 29000) ? 200 : 300;
     if (std::abs(deviation_ft) >= threshold_ft) {
       s_enroute_alt_warn_cooldown = 120.0f;
       if (out_text) {
-        int fl = s_enroute_cleared_alt_ft / 100;
         char buf[160];
-        std::snprintf(
-            buf, sizeof(buf),
-            "%s, check altitude, you are %d feet %s assigned flight level %d.",
-            callsign.c_str(), std::abs(deviation_ft),
-            deviation_ft > 0 ? "above" : "below", fl);
+        if (cleared_is_fl) {
+          std::snprintf(
+              buf, sizeof(buf),
+              "%s, check altitude, you are %d feet %s assigned flight level %d.",
+              callsign.c_str(), std::abs(deviation_ft),
+              deviation_ft > 0 ? "above" : "below",
+              s_enroute_cleared_alt_ft / 100);
+        } else {
+          std::snprintf(
+              buf, sizeof(buf),
+              "%s, check altitude, you are %d feet %s assigned altitude %d feet.",
+              callsign.c_str(), std::abs(deviation_ft),
+              deviation_ft > 0 ? "above" : "below",
+              s_enroute_cleared_alt_ft);
+        }
         *out_text = buf;
       }
-      logging::info("IFR en-route: altitude deviation %+d ft from FL%d",
-                    deviation_ft, s_enroute_cleared_alt_ft / 100);
+      logging::info("IFR en-route: altitude deviation %+d ft from %s%d (ref=%s)",
+                    deviation_ft, cleared_is_fl ? "FL" : "",
+                    cleared_is_fl ? s_enroute_cleared_alt_ft / 100
+                                  : s_enroute_cleared_alt_ft,
+                    cleared_is_fl ? "pressure" : "MSL");
       return true;
     }
   }
@@ -4350,6 +4603,21 @@ bool poll_approach(const xplane_context::XPlaneContext &ctx, float dt,
           float new_mhz = static_cast<float>(new_freq_khz) / 1000.0f;
           s_current_controller_label = new_label;
           s_pending_handoff_freq_mhz = new_mhz;
+          // Also update the "active approach freq" gate so the check-in
+          // handler (engine.cpp line ~820) doesn't accept a call on the
+          // OLD sector's freq. Without this the check-in fires while the
+          // pilot is still on the previous sector's frequency.
+          s_enroute_approach_freq_mhz = new_mhz;
+          // Suppress "contact X on Y" when the pilot is already on that
+          // frequency (same rationale as the en-route sector-change guard).
+          const float active_com_ac =
+              (ctx.active_com == 2) ? ctx.com2_freq_mhz : ctx.com1_freq_mhz;
+          if (std::fabs(active_com_ac - new_mhz) < 0.005f) {
+            s_sector_checkin_pending = false;
+            logging::info("[approach] sector change -> %s %.3f MHz (pilot already on freq -- silent)",
+                          new_label.c_str(), new_mhz);
+            return false;
+          }
           s_sector_checkin_pending = true;
           const std::string &cs_s2 = atc_state_machine::session_callsign();
           const std::string &cs2 = cs_s2.empty() ? settings::pilot_callsign() : cs_s2;
@@ -4403,15 +4671,28 @@ bool poll_approach(const xplane_context::XPlaneContext &ctx, float dt,
                 cap = (c2 == ' ');
               }
             } else {
-              ctrl_label = s_assigned_dest_icao.empty()
-                               ? "Information"
-                               : (s_assigned_dest_icao + " Information");
+              // Prefer the destination airport NAME over the ICAO code —
+              // ICAO codes are never spoken over the radio.
+              std::string apt_name2;
+              if (!s_assigned_dest_icao.empty())
+                apt_name2 = xplane_context::airport_name_for(s_assigned_dest_icao);
+              if (!apt_name2.empty())
+                ctrl_label = apt_name2 + " Information";
+              else
+                ctrl_label = s_assigned_dest_icao.empty()
+                                 ? "Information"
+                                 : (s_assigned_dest_icao + " Information");
             }
           } else {
             ctrl_label = "Tower";
           }
           std::snprintf(buf, sizeof(buf), "%s, contact %s on %d.%03d.",
                         cs2.c_str(), ctrl_label.c_str(), khz / 1000, khz % 1000);
+          // Update the current controller label so the next TTS speaker prefix
+          // matches the new facility (e.g. "Reims Prunay Information:" instead
+          // of the previous sector's "Paris:").
+          s_current_controller_label = ctrl_label;
+          s_pending_handoff_freq_mhz = tower_mhz;
         } else {
           std::snprintf(buf, sizeof(buf), "%s, contact Tower.", cs2.c_str());
         }
@@ -4598,8 +4879,19 @@ bool poll_approach(const xplane_context::XPlaneContext &ctx, float dt,
                 cap = (c == ' ');
               }
             } else {
-              ctrl_label = s_assigned_dest_icao.empty() ? "Information"
-                                                        : (s_assigned_dest_icao + " Information");
+              // Fallback: use the destination's airport NAME (e.g. "Reims
+              // Prunay") rather than the ICAO code. ICAO codes are printed
+              // in flight planning but never spoken over the radio ("contact
+              // LFQA Information" is unnatural). Only fall back to ICAO if
+              // the airport name is also unavailable.
+              std::string apt_name;
+              if (!s_assigned_dest_icao.empty())
+                apt_name = xplane_context::airport_name_for(s_assigned_dest_icao);
+              if (!apt_name.empty())
+                ctrl_label = apt_name + " Information";
+              else
+                ctrl_label = s_assigned_dest_icao.empty() ? "Information"
+                                                          : (s_assigned_dest_icao + " Information");
             }
           } else {
             ctrl_label = "Tower";
@@ -4607,6 +4899,13 @@ bool poll_approach(const xplane_context::XPlaneContext &ctx, float dt,
           std::snprintf(buf, sizeof(buf),
                         "%s, contact %s on %d.%03d, %s.",
                         cs.c_str(), ctrl_label.c_str(), khz / 1000, khz % 1000, final_call);
+          // Update speaker label + pending handoff freq so the next TTS
+          // response is spoken as "Reims Prunay Information:" (not still
+          // "Melun:"), and the sector-checkin ack + handoff-reissue paths
+          // know which frequency the pilot must switch to.
+          s_current_controller_label = ctrl_label;
+          s_pending_handoff_freq_mhz = tower_mhz;
+          s_sector_checkin_pending   = true;
         } else {
           std::snprintf(buf, sizeof(buf),
                         "%s, contact Tower, %s.", cs.c_str(), final_call);

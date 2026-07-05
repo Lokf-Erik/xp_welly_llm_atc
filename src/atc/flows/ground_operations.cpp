@@ -910,9 +910,17 @@ bool check_handoff_reissue(const PilotMessage &msg, const XPlaneContext &ctx,
   }
 
   // IFR handoff-pending states: pilot called back on old (non-Centre) frequency.
+  // Covers en-route (FREQ_HANDOFF / ENROUTE_CRUISE) and all approach phases —
+  // sector transfers within Approach (Melun -> Paris), Approach -> Tower/AFIS
+  // at FAF, and Tower -> Ground after landing all set s_pending_handoff_freq_mhz.
   const std::string state_str = atc_state_machine::state_name(cur);
-  bool ifr_handoff = (state_str == "IFR/FREQ_HANDOFF" ||
-                      state_str == "IFR/ENROUTE_CRUISE");
+  bool ifr_handoff = (state_str == "IFR/FREQ_HANDOFF"        ||
+                      state_str == "IFR/ENROUTE_CRUISE"      ||
+                      state_str == "IFR/DESCENT"             ||
+                      state_str == "IFR/APPROACH_CONTACT"    ||
+                      state_str == "IFR/APPROACH_DESCENT"    ||
+                      state_str == "IFR/APPROACH_TOWER"      ||
+                      state_str == "IFR/LANDING_CLEARED");
   if (ifr_handoff &&
       ctx.frequency_type != FT::UNKNOWN &&
       ctx.frequency_type != FT::CTAF   &&
@@ -1000,13 +1008,18 @@ bool check_freq_precondition(const PilotMessage &msg, const XPlaneContext &ctx,
   }
   if (ctx.tower_only && ctx.frequency_type == FT::TOWER)
     return false;
-  // IFR airborne states: pilot is on a Centre/en-route frequency that will
-  // never appear in any local airport DB (always UNKNOWN). Skip the guard.
+  // IFR airborne states: pilot is on a Centre/en-route/Approach/Tower/AFIS
+  // frequency that may not appear in the destination's local airport DB, or
+  // may be classified as ATIS/UNKNOWN (AFIS destinations, e.g. LFQA Info on
+  // 134.925). Skip the guard — the pilot has already been handed to this
+  // controller by the plugin, so any READBACK/ack on this freq is legitimate
+  // regardless of the freq type classification.
   {
     const std::string s = atc_state_machine::state_name(internal::get_state_ref());
     if (s == "IFR/RADAR_CONTACT"    || s == "IFR/ENROUTE_CRUISE" ||
         s == "IFR/FREQ_HANDOFF"     || s == "IFR/APPROACH_CONTACT" ||
-        s == "IFR/APPROACH_DESCENT")
+        s == "IFR/APPROACH_DESCENT" || s == "IFR/APPROACH_TOWER"  ||
+        s == "IFR/LANDING_CLEARED")
       return false;
   }
   std::string intent_key = intent_parser::intent_template_key(msg.intent);

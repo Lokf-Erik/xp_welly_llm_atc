@@ -262,6 +262,9 @@ static const std::vector<std::pair<std::string, std::string>> kPhraseAliases = {
     {"rnav november",     "rnav runway"},    // Voxtral: "runway" → "November" before runway number
     {"arnold approach",   "rnav approach"}, // Voxtral phonetic garble of "RNAV"
     {"armature approach", "rnav approach"}, // Voxtral: "armature" for "RNAV"
+    {"arm of",            "rnav"},          // Voxtral: "arm of 07" → "RNAV 07"
+    {"r nav",             "rnav"},          // Voxtral output when biased with "R NAV"
+    {"r-nav",             "rnav"},          // Voxtral output when biased with "R-NAV"
     // Voxtral mishears "two" as "to" in frequencies — anchor with "decimal"
     // so "one to one decimal" = 121.xxx is fixed without corrupting callsigns
     // like "November One One One" which would match "one to one" without anchor.

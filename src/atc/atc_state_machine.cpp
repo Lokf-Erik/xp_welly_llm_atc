@@ -700,6 +700,34 @@ static void
 apply_post_transition_hooks(const intent_parser::PilotMessage &msg,
                             const xplane_context::XPlaneContext &ctx,
                             ATCResponse &resp) {
+  // Defensive: if a readback is pending and the pilot's raw transcript
+  // satisfies every required field (FL / altitude / freq / squawk / runway)
+  // in the clearance text, silently clear the readback state regardless of
+  // the intent classification. This catches the case where the LM
+  // misclassifies a valid readback ("Flight level seven zero, N111RC") as
+  // INITIAL_CALL_CENTER / INITIAL_CALL_APPROACH / etc. — without this,
+  // the pending clearance lingers and the NEXT readback (on an unrelated
+  // clearance) gets checked against the stale text ("expected FL70" on a
+  // reduce-speed readback).
+  if (g_state.readback_pending_ && !g_state.last_clearance_text_.empty() &&
+      msg.intent != intent_parser::PilotIntent::READBACK &&
+      !msg.raw_transcript.empty()) {
+    auto stale_mm = readback_verifier::check(g_state.last_clearance_text_,
+                                             msg.raw_transcript);
+    if (stale_mm.empty()) {
+      // All fields satisfied by this non-READBACK utterance — treat the
+      // clearance as acknowledged.
+      logging::info("Readback silently accepted (intent=%s) — all fields matched",
+                    intent_parser::intent_name(msg.intent));
+      bump_gen();
+      g_state.readback_pending_ = false;
+      g_state.last_clearance_text_.clear();
+      g_state.readback_ok_fields_.clear();
+      g_state.readback_pending_since_secs_ = 0.0;
+      g_state.readback_last_reminder_secs_ = 0.0;
+      g_state.readback_reminder_count_ = 0;
+    }
+  }
   // Track readback state.
   if (msg.intent == intent_parser::PilotIntent::READBACK) {
     // Verify the readback when a clearance is pending.

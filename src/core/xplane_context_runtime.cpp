@@ -127,9 +127,17 @@ static std::unordered_map<std::string,
     holding_cache_;
 // Transition altitude in feet per airport — from apt.dat 1302 transition_alt.
 static std::unordered_map<std::string, int> transition_alt_cache_;
-// Taxiway midpoints per airport — for nearest-taxiway lookup at vacate time.
-// Each entry is (mid_lat, mid_lon, name) where name is the ATC letter ("A","B").
-struct TaxiwayMidpoint { double lat = 0.0, lon = 0.0; std::string name; };
+// Taxiway edges per airport — for nearest-taxiway lookup at vacate time.
+// Stored as full line segments (both endpoints) so we can compute the exact
+// distance from the aircraft's position to each edge and pick the taxiway
+// the aircraft is physically ON, not just the closest midpoint (which can
+// point at a parallel taxiway on the far side of the runway).
+struct TaxiwayMidpoint {
+  double lat = 0.0, lon = 0.0;                 // midpoint (kept for legacy uses)
+  double from_lat = 0.0, from_lon = 0.0;       // edge endpoints
+  double to_lat = 0.0, to_lon = 0.0;
+  std::string name;
+};
 static std::unordered_map<std::string, std::vector<TaxiwayMidpoint>>
     taxiway_midpoint_cache_;
 static std::atomic<bool> towered_cache_ready_{false};
@@ -307,8 +315,13 @@ static const char *kPhoneticLetters[26] = {
     "Yankee",  "Zulu",
 };
 
-// Return "via Alpha" / "via Bravo" for the nearest named taxiway edge to the
-// given aircraft position, or "to the apron" if no edge is found.
+// Return "via Alpha" / "via Bravo" for the taxiway edge the aircraft is
+// physically on (or standing next to), or "to the apron" if no edge is
+// close enough. Uses point-to-segment distance from the aircraft to each
+// taxiway edge — the taxiway the aircraft is ON has distance ≈ 0. Using
+// the midpoint alone was too crude: a parallel taxiway across the runway
+// could have a geometrically-closer midpoint than the taxiway the aircraft
+// is actually rolling on.
 std::string nearest_taxiway_phrase(const std::string &icao,
                                    double lat, double lon) {
   if (!towered_cache_ready_)
@@ -316,16 +329,49 @@ std::string nearest_taxiway_phrase(const std::string &icao,
   auto it = taxiway_midpoint_cache_.find(icao);
   if (it == taxiway_midpoint_cache_.end() || it->second.empty())
     return "to the apron";
-  double best_dist = 1e9;
+
+  // Local-tangent projection for point-to-segment math. Good enough at
+  // taxiway scales (< 100 m error over a few NM).
+  const double lat_rad   = lat * M_PI / 180.0;
+  const double m_per_lat = 111132.92;
+  const double m_per_lon = 111412.84 * std::cos(lat_rad);
+  auto to_xy = [&](double la, double lo, double &x, double &y) {
+    x = (lo - lon) * m_per_lon;
+    y = (la - lat) * m_per_lat;
+  };
+
+  double best_dist_m = 1e9;
   const TaxiwayMidpoint *best = nullptr;
   for (const auto &mp : it->second) {
-    double d = haversine_distance(lat, lon, mp.lat, mp.lon);
-    if (d < best_dist) {
-      best_dist = d;
+    // Handle degenerate edges (single-point) by falling back to midpoint.
+    if (mp.from_lat == 0.0 && mp.from_lon == 0.0 &&
+        mp.to_lat == 0.0 && mp.to_lon == 0.0) {
+      double d = haversine_distance(lat, lon, mp.lat, mp.lon);
+      if (d < best_dist_m) { best_dist_m = d; best = &mp; }
+      continue;
+    }
+    double ax, ay, bx, by;
+    to_xy(mp.from_lat, mp.from_lon, ax, ay);
+    to_xy(mp.to_lat,   mp.to_lon,   bx, by);
+    // Aircraft is at (0,0) in this projection.
+    const double dx = bx - ax, dy = by - ay;
+    const double len2 = dx*dx + dy*dy;
+    double t = 0.0;
+    if (len2 > 1e-6)
+      t = std::max(0.0, std::min(1.0, (-ax * dx + -ay * dy) / len2));
+    const double px = ax + t * dx;
+    const double py = ay + t * dy;
+    const double d_m = std::sqrt(px*px + py*py);
+    if (d_m < best_dist_m) {
+      best_dist_m = d_m;
       best = &mp;
     }
   }
   if (!best)
+    return "to the apron";
+  // If the nearest edge is > 40 m away the aircraft is likely not on any
+  // named taxiway (crossed onto grass / on the runway itself).
+  if (best_dist_m > 40.0)
     return "to the apron";
   const std::string &name = best->name;
   // Single uppercase letter → NATO phonetic.
@@ -621,6 +667,10 @@ static void parse_apt_file(const std::string &path, AptParseData &d) {
           TaxiwayMidpoint mp;
           mp.lat  = (fi->second.lat + ti->second.lat) * 0.5;
           mp.lon  = (fi->second.lon + ti->second.lon) * 0.5;
+          mp.from_lat = fi->second.lat;
+          mp.from_lon = fi->second.lon;
+          mp.to_lat   = ti->second.lat;
+          mp.to_lon   = ti->second.lon;
           mp.name = e.taxiway;
           twy_vec.push_back(mp);
         }
