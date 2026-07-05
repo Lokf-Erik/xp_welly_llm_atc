@@ -23,7 +23,13 @@
     { "_note": "Voxtral drops the 'Anne' prefix from 'Annecy' when followed by a facility word.",
       "from": "nc tower", "to": "annecy tower" },
     { "_note": "Voxtral drops the 'Anne' prefix from 'Annecy' when followed by ground.",
-      "from": "nc ground", "to": "annecy ground" }
+      "from": "nc ground", "to": "annecy ground" },
+    { "_note": "Voxtral mishears 'decimal' as 'this symbol' in frequency readbacks (e.g. '118 this symbol 030' -> '118 decimal 030').",
+      "from": "this symbol", "to": "decimal" },
+    { "_note": "Voxtral drops the past-tense 'd' from 'established' before an approach type (RNAV/ILS). Fix so 'establish rnav' and 'establish ils' still match the text_contains:'established' guard in INITIAL_CALL_TOWER.",
+      "from": "establish rnav", "to": "established rnav" },
+    { "_note": "Same 'd'-drop fix for ILS establishment report.",
+      "from": "establish ils", "to": "established ils" }
   ],
 
   "rules": [
@@ -502,6 +508,17 @@
         "current_state_in": ["IFR/APPROACH_TOWER"]
       },
       "set_intent": "INITIAL_CALL_TOWER",
+      "set_confidence": 0.93
+    },
+    {
+      "_note": "IFR approach check-in with QNH: standard EUROCONTROL phraseology includes QNH in the initial call to Approach ('November 111RC, Melun Approach, descending 4500 feet, QNH 1025'). The READBACK rule matches 'qnh' at 0.90, shadowing INITIAL_CALL_APPROACH at 0.88. Promote only when (1) the text contains 'approach' (Approach facility keyword, as opposed to a plain descent readback), and (2) no readback is currently pending (readback_pending=false guards against a navlog step-down readback being misclassified). Note: has_facility is not a valid adjustment-rule key — use text_contains instead.",
+      "if": {
+        "intent": "READBACK",
+        "text_contains": "approach",
+        "readback_pending": false,
+        "current_state_in": ["IFR/EN_ROUTE", "IFR/ENROUTE_CRUISE", "IFR/APPROACH_CONTACT"]
+      },
+      "set_intent": "INITIAL_CALL_APPROACH",
       "set_confidence": 0.93
     }
   ]

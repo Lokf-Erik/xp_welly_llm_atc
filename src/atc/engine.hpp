@@ -34,6 +34,14 @@ struct Input {
   // counter. Defaults to 0 — fine for code paths that never enter the
   // traffic dialog.
   double now_secs = 0.0;
+  // LM re-entry: when the LM callback needs the IFR-specific handlers that
+  // live in process_transcript (e.g. early-approach-call, APPROACH_CONTACT
+  // check-in), it re-invokes process_transcript with this field set.
+  // process_transcript overrides the rule-based result with this intent.
+  // UNKNOWN = not set (normal path).
+  intent_parser::PilotIntent pre_classified_intent =
+      intent_parser::PilotIntent::UNKNOWN;
+  float pre_classified_conf = 0.0f;
 };
 
 struct Output {
@@ -145,6 +153,14 @@ bool poll_departure_handoff(const xplane_context::XPlaneContext &ctx, float dt,
 bool poll_sid_climb(const xplane_context::XPlaneContext &ctx, float dt,
                     std::string *out_text);
 
+// ICAO speed restriction: issues "reduce speed to 250 knots" when the aircraft
+// is below FL100 and IAS > 255 kt (5 kt hysteresis). Fires once per descent
+// through FL100; resets automatically when the aircraft climbs back above FL100.
+// Active in IFR_RADAR_CONTACT, IFR_ENROUTE_CRUISE, and IFR_APPROACH_CONTACT.
+// No readback required.
+bool poll_speed_restriction(const xplane_context::XPlaneContext &ctx,
+                            std::string *out_text);
+
 // IFR en-route management: fires while in IFR_ENROUTE_CRUISE (on Centre).
 // Three sub-functions:
 //   1. ~90-120 s after Centre check-in: "direct {fix}, when able." (navlog
@@ -158,6 +174,13 @@ bool poll_sid_climb(const xplane_context::XPlaneContext &ctx, float dt,
 //      (3-minute cooldown between warnings)
 // Returns true when a message was emitted (caller routes to TTS + transcript).
 bool poll_enroute(const xplane_context::XPlaneContext &ctx, float dt,
+                  std::string *out_text,
+                  bool *out_requires_readback = nullptr);
+
+// IFR descent phase (IFR_DESCENT state): TMA/CTR entry detection and
+// Approach frequency handoff. Runs after build_descent_clearance fires
+// until state transitions to IFR_APPROACH_CONTACT.
+bool poll_descent(const xplane_context::XPlaneContext &ctx, float dt,
                   std::string *out_text,
                   bool *out_requires_readback = nullptr);
 

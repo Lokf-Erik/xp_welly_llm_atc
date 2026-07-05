@@ -219,6 +219,17 @@ std::pair<double, double> airport_pos_for(const std::string &icao);
 // freq cache. Returns 0.0f if the airport is unknown or has no Tower freq.
 float tower_mhz_for(const std::string &icao);
 
+// Returns true if the airport has a dedicated Ground frequency. Use this to
+// distinguish a real Tower from an AFIS/Information service (AFIS airports
+// have a Tower-type freq but no Ground freq, e.g. LFQA 134.925 AFIS).
+bool has_ground_freq_for(const std::string &icao);
+
+// Returns a ready-to-use phrase for the nearest taxiway to the given position:
+// "via Alpha", "via Bravo", ... or "to the apron" when no taxiway is found.
+// Used in the RUNWAY_VACATED_TOWER_ONLY template as {nearest_taxiway}.
+std::string nearest_taxiway_phrase(const std::string &icao,
+                                   double lat, double lon);
+
 } // namespace xplane_context
 
 #endif // XPLANE_CONTEXT_HPP

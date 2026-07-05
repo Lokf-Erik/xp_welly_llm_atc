@@ -2353,19 +2353,21 @@ static void draw_enroute_tab(const xplane_context::XPlaneContext &ctx) {
         if (is_active)
           ImGui::PopStyleColor();
 
-        // Altitude block: "SFC-FL095" or "5000ft-FL195"
+        // Altitude block: "SFC-FL095" or "2000ft-FL195"
+        // FL notation only above the European transition altitude (~6000 ft).
+        // Below that, always show in feet (e.g. 1500ft, 2000ft, 3500ft).
         if (c->floor_ft >= 0 || c->ceiling_ft > 0) {
           char floor_s[16], ceil_s[16];
           if (c->floor_ft <= 0) {
             std::snprintf(floor_s, sizeof(floor_s), "SFC");
-          } else if (c->floor_ft % 100 == 0 && c->floor_ft >= 1000) {
+          } else if (c->floor_ft % 100 == 0 && c->floor_ft >= 6000) {
             std::snprintf(floor_s, sizeof(floor_s), "FL%03d", c->floor_ft / 100);
           } else {
             std::snprintf(floor_s, sizeof(floor_s), "%dft", c->floor_ft);
           }
           if (c->ceiling_ft >= 99000) {
             std::snprintf(ceil_s, sizeof(ceil_s), "UNL");
-          } else if (c->ceiling_ft % 100 == 0 && c->ceiling_ft >= 1000) {
+          } else if (c->ceiling_ft % 100 == 0 && c->ceiling_ft >= 6000) {
             std::snprintf(ceil_s, sizeof(ceil_s), "FL%03d", c->ceiling_ft / 100);
           } else {
             std::snprintf(ceil_s, sizeof(ceil_s), "%dft", c->ceiling_ft);

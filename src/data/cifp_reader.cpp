@@ -124,6 +124,8 @@ CifpAlt initial_altitude(const std::string &cifp_dir, const std::string &icao,
   if (!in.good()) {
     logging::info("[cifp] file not found: %s (icao=%s rwy=%s) -> fallback",
                   path.c_str(), icao_upper.c_str(), active_runway.c_str());
+    std::lock_guard<std::mutex> lk(g_alt_cache_mutex);
+    g_alt_cache[cache_key] = {};  // cache the failure to suppress per-frame log spam
     return {};
   }
 

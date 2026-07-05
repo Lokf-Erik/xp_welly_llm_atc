@@ -269,12 +269,16 @@ const char *state_name(ATCState state) {
     return "IFR/RADAR_CONTACT";
   case ATCState::IFR_ENROUTE_CRUISE:
     return "IFR/ENROUTE_CRUISE";
+  case ATCState::IFR_DESCENT:
+    return "IFR/DESCENT";
   case ATCState::IFR_APPROACH_CONTACT:
     return "IFR/APPROACH_CONTACT";
   case ATCState::IFR_APPROACH_DESCENT:
     return "IFR/APPROACH_DESCENT";
   case ATCState::IFR_APPROACH_TOWER:
     return "IFR/APPROACH_TOWER";
+  case ATCState::IFR_LANDING_CLEARED:
+    return "IFR/LANDING_CLEARED";
   }
   return "UNKNOWN";
 }
@@ -325,6 +329,8 @@ ATCState state_from_name(const std::string &name) {
       {"IFR_APPROACH_DESCENT", ATCState::IFR_APPROACH_DESCENT},
       {"IFR/APPROACH_TOWER", ATCState::IFR_APPROACH_TOWER},
       {"IFR_APPROACH_TOWER", ATCState::IFR_APPROACH_TOWER},
+      {"IFR/LANDING_CLEARED", ATCState::IFR_LANDING_CLEARED},
+      {"IFR_LANDING_CLEARED", ATCState::IFR_LANDING_CLEARED},
   };
   auto it = kMap.find(name);
   return it != kMap.end() ? it->second : ATCState::IDLE;
@@ -611,8 +617,14 @@ std::string consume_readback_reminder(double now_secs) {
   // discard the pending readback and let poll_enroute() re-issue if needed.
   if (g_state.readback_reminder_count_ >= kReadbackMaxReminders) {
     const char *cur = state_name(g_state.state_);
-    const bool is_enroute_cruise =
-        std::strcmp(cur, "IFR/ENROUTE_CRUISE") == 0;
+    // IFR in-flight states where resetting to IDLE would destroy poll
+    // statics and kill the approach / descent / cruise flow.
+    const bool is_ifr_inflight =
+        std::strcmp(cur, "IFR/ENROUTE_CRUISE") == 0    ||
+        std::strcmp(cur, "IFR/DESCENT") == 0            ||
+        std::strcmp(cur, "IFR/APPROACH_CONTACT") == 0   ||
+        std::strcmp(cur, "IFR/APPROACH_DESCENT") == 0   ||
+        std::strcmp(cur, "IFR/APPROACH_TOWER") == 0;
     bump_gen();
     g_state.readback_pending_ = false;
     g_state.last_clearance_text_.clear();
@@ -620,13 +632,14 @@ std::string consume_readback_reminder(double now_secs) {
     g_state.readback_pending_since_secs_ = 0.0;
     g_state.readback_last_reminder_secs_ = 0.0;
     g_state.readback_reminder_count_ = 0;
-    if (is_enroute_cruise) {
-      // Stay in ENROUTE_CRUISE — the pilot will respond when ready or the
-      // proactive clearance will be re-issued.
-      logging::info("Readback timeout in ENROUTE_CRUISE — discarded (no state reset)");
+    if (is_ifr_inflight) {
+      // Stay in current state — the pilot is heads-down flying; going to IDLE
+      // here would wipe all poll_enroute/poll_descent/poll_approach statics and
+      // permanently block the approach sequence.
+      logging::info("Readback timeout in %s — discarded (no state reset)", cur);
       return {};
     }
-    // IFR non-cruise states get a neutral "say again". VFR uses "clearance cancelled".
+    // IFR ground / VFR states: clearance is cancelled and pilot must re-request.
     const bool is_ifr = (cur[0] == 'I' && cur[1] == 'F' && cur[2] == 'R' && cur[3] == '/');
     internal::transition_to(ATCState::IDLE, "readback_timeout_cancel");
     logging::info("Readback timeout — clearance cancelled");

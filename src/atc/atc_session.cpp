@@ -634,6 +634,24 @@ static void submit_recording_to_stt() {
   const std::string raw_cs = settings::pilot_callsign_raw();
   if (!raw_cs.empty())
     airport_ctx += " " + raw_cs;
+  // Abbreviated callsign — last two NATO letters (ICAO Doc 4444 §5.2).
+  // After the initial exchange, ATC and pilot both drop the middle digits
+  // (e.g. "November One One One Romeo Charlie" -> "Romeo Charlie"). Biasing
+  // the trailing pair explicitly stops Voxtral from garbling it into
+  // "runway Charlie", "Romo Charlie", "on the road to Charlie", etc.
+  if (!phonetic.empty()) {
+    std::vector<std::string> nato_words;
+    std::string cur;
+    for (char c : phonetic) {
+      if (c == ' ') { if (!cur.empty()) nato_words.push_back(cur); cur.clear(); }
+      else cur += c;
+    }
+    if (!cur.empty()) nato_words.push_back(cur);
+    if (nato_words.size() >= 2) {
+      airport_ctx += " " + nato_words[nato_words.size() - 2] +
+                     " " + nato_words[nato_words.size() - 1];
+    }
+  }
   // SID, STAR, destination ICAO + name, and all FPL fix idents from SimBrief OFP.
   // Built fresh every PTT so the STAR name appears as soon as ATC assigns it.
   // Cap at 60 fixes to avoid inflating the prompt on long-haul routes.
@@ -745,13 +763,37 @@ static void submit_recording_to_stt() {
   // identified in flight testing (see project_voxtral_stt_errors.md).
   // Each token becomes a separate context_bias[] entry for Voxtral and
   // extends the initial_prompt for whisper.cpp / OpenAI.
+  // Acronym separations: pilots pronounce "R-NAV" as two syllables (or
+  // "AR-NAV"). Voxtral often outputs "arm of / arnold / armature" when the
+  // single-token "RNAV" fails to match. We add TWO forms:
+  //   - "R-NAV" (hyphenated) — single Mistral context_bias entry that
+  //     matches ^[^,\s]+$; teaches Voxtral the two-syllable spelling.
+  //   - "R NAV" (spaced) — for whisper.cpp / OpenAI freeform initial_prompt,
+  //     which does use adjacent tokens as a bigram hint. Mistral splits
+  //     this into "R" and "NAV" separately (harmless — short tokens have
+  //     low bias weight; the "R-NAV" entry is the useful one).
+  // The kPhraseAliases pass converts either output form back to "rnav".
   airport_ctx +=
       " Romeo IFR QNH Mode Charlie holding point squawk vacated"
-      " taxi RNAV report ground tower wilco roger startup"
+      " taxi RNAV R-NAV R NAV report ground tower wilco roger startup"
       " climb climbing departure ready"
       " filed maintain cleared descend identified request"
-      " contact frequency approach control radar information centre"
-      " cancelling cancel cancellation";
+      " contact frequency approach control radar information centre";
+  // Approach + runway bigram: after Approach clears the aircraft, the pilot
+  // will say "R-NAV 25" or "RNAV 25" (or ILS/RNP/etc + rwy). Voxtral often
+  // mishears "RNAV 25" as "RNAV to 5" — the "2" becomes "to". Biasing the
+  // exact "R-NAV NN" phrase anchors the digit pair as a unit. Uses the
+  // CIFP-assigned landing runway (set at Approach check-in via
+  // set_assigned_runway) rather than ctx.active_runway (which can be
+  // wind-favoured for the opposite end).
+  if (!locked_rwy.empty()) {
+    // "R-NAV NN" and "RNAV NN" — anchor the digit pair to the assigned
+    // runway. Without this, Voxtral turns "RNAV 25" into "RNAV to 5"
+    // (the "2" becomes "to"). "runway NN" is already added at line ~622.
+    airport_ctx += " R-NAV " + locked_rwy;
+    airport_ctx += " RNAV "  + locked_rwy;
+  }
+  airport_ctx += " cancelling cancel cancellation";
 
   if (g_transcript_log_) {
     static std::string s_last_logged_ctx;
@@ -1052,6 +1094,25 @@ void update() {
       return; // one tower utterance per frame
     }
 
+    // ICAO speed restriction: 250 kt or less below FL100.
+    std::string speed_text;
+    if (engine::poll_speed_restriction(ctx_now, &speed_text) &&
+        !speed_text.empty()) {
+      float active_freq = (ctx_now.active_com == 1) ? ctx_now.com1_freq_mhz
+                                                    : ctx_now.com2_freq_mhz;
+      char freq_str[16];
+      std::snprintf(freq_str, sizeof(freq_str), "%.3f", active_freq);
+      push_transcript(TranscriptEntry{
+          static_cast<double>(XPLMGetElapsedTime()),
+          TranscriptKind::Tower,
+          speed_text,
+          freq_str,
+          engine::current_controller_label(),
+      });
+      speak_response(speed_text, role_for_frequency(ctx_now), 1.0f);
+      return;
+    }
+
     // IFR en-route management: Centre direct-to shortcut, TMA entry descent
     // clearance (proactive — ATC does not wait for pilot request), and
     // cross-track deviation alert.
@@ -1076,6 +1137,29 @@ void update() {
       if (enroute_rb)
         atc_state_machine::arm_readback(enroute_text);
       return; // one tower utterance per frame
+    }
+
+    // IFR descent phase: TMA/CTR boundary detection and Approach handoff.
+    std::string descent_text;
+    bool descent_rb = false;
+    if (engine::poll_descent(ctx_now, dt, &descent_text, &descent_rb) &&
+        !descent_text.empty()) {
+      float active_freq = (ctx_now.active_com == 1) ? ctx_now.com1_freq_mhz
+                                                    : ctx_now.com2_freq_mhz;
+      char freq_str[16];
+      std::snprintf(freq_str, sizeof(freq_str), "%.3f", active_freq);
+      push_transcript(TranscriptEntry{
+          static_cast<double>(XPLMGetElapsedTime()),
+          TranscriptKind::Tower,
+          descent_text,
+          freq_str,
+          engine::current_controller_label(),
+      });
+      auto role = role_for_frequency(ctx_now);
+      speak_response(descent_text, role, 1.0f);
+      if (descent_rb)
+        atc_state_machine::arm_readback(descent_text);
+      return;
     }
 
     // IFR approach STAR constraint management: step-down clearances + final alt.

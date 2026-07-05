@@ -356,6 +356,9 @@ std::map<std::string, std::string> build_vars(const PilotMessage &msg,
       {"entry_vrp", msg.vrp_name},
       {"position_remark", position_remark},
       {"tower_handoff_phrase", tower_handoff_phrase},
+      {"nearest_taxiway",
+       xplane_context::nearest_taxiway_phrase(ctx.nearest_airport_id,
+                                              ctx.latitude, ctx.longitude)},
       // Traffic-advisory placeholders. Empty for normal pilot-driven
       // intents — populated by render_traffic_advisory() and
       // traffic_dialog before template fill(). {side} is Phase-3's

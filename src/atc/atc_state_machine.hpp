@@ -60,10 +60,12 @@ enum class ATCState {
                       // climbs
   IFR_ENROUTE_CRUISE, // on Centre frequency; ATC issues direct-to, then descent
                       // + handoff
+  IFR_DESCENT,        // descent clearance issued; awaiting TMA entry + Approach handoff
   IFR_APPROACH_CONTACT, // Centre handed off to Approach; pilot has not yet
                         // called
-  IFR_APPROACH_DESCENT, // Approach monitoring STAR step-down constraints
-  IFR_APPROACH_TOWER,   // Approach handed off to Tower; pilot reports established
+  IFR_APPROACH_DESCENT,  // Approach monitoring STAR step-down constraints
+  IFR_APPROACH_TOWER,    // Approach handed off to Tower; pilot reports established
+  IFR_LANDING_CLEARED,   // IFR landing clearance issued; awaiting runway-vacated call
 };
 
 struct ATCResponse {

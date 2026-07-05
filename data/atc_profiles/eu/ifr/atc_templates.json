@@ -352,17 +352,17 @@
       "_comment": "Pilot switched to Tower after 'contact Tower, report established'. Tower gives landing clearance on check-in.",
       "INITIAL_CALL_TOWER": {
         "response": "{callsign}, runway {runway}, cleared to land, wind {wind}.",
-        "next_state": "Pattern/LANDING_CLEARED",
+        "next_state": "IFR/LANDING_CLEARED",
         "requires_readback": false
       },
       "REPORT_POSITION_FINAL": {
         "response": "{callsign}, runway {runway}, cleared to land, wind {wind}.",
-        "next_state": "Pattern/LANDING_CLEARED",
+        "next_state": "IFR/LANDING_CLEARED",
         "requires_readback": false
       },
       "REQUEST_LANDING": {
         "response": "{callsign}, runway {runway}, cleared to land, wind {wind}.",
-        "next_state": "Pattern/LANDING_CLEARED",
+        "next_state": "IFR/LANDING_CLEARED",
         "requires_readback": false
       },
       "READBACK": {
@@ -373,6 +373,30 @@
       "_INVALID": {
         "response": "{callsign}, say again.",
         "next_state": "IFR/APPROACH_TOWER",
+        "requires_readback": false
+      }
+    },
+
+    "IFR/LANDING_CLEARED": {
+      "_comment": "IFR landing cleared. Waiting for pilot runway-vacated call. Tower-only airports give direct taxi instructions. State stays IFR/LANDING_CLEARED until the pilot reports at parking / leaves the frequency — the flight plan closure phraseology is emitted by the code handler in engine.cpp (distinguishes AFIS vs towered destinations).",
+      "RUNWAY_VACATED": {
+        "response": "{callsign}, contact ground on {ground_frequency}, good day.",
+        "next_state": "IDLE",
+        "requires_readback": false
+      },
+      "RUNWAY_VACATED_TOWER_ONLY": {
+        "response": "{callsign}, taxi {nearest_taxiway}, report on stand.",
+        "next_state": "IFR/LANDING_CLEARED",
+        "requires_readback": true
+      },
+      "READBACK": {
+        "response": "",
+        "next_state": "IFR/LANDING_CLEARED",
+        "requires_readback": false
+      },
+      "_INVALID": {
+        "response": "{callsign}, say again.",
+        "next_state": "IFR/LANDING_CLEARED",
         "requires_readback": false
       }
     },

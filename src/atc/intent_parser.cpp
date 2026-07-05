@@ -230,10 +230,14 @@ static const std::unordered_map<std::string, std::string> kWordAliases = {
     {"romo", "romeo"},
     {"rome", "romeo"},
     // Approach type — Voxtral mishearings:
-    {"r9", "rnav"},    // "R9 approach" → "RNAV approach"
-    {"rmp", "rnp"},    // "RMP approach" → "RNP approach"
+    {"r9",    "rnav"}, // "R9 approach" → "RNAV approach"
+    {"armad", "rnav"}, // "armad approach" → "RNAV approach"
+    {"arnal", "rnav"}, // "arnal approach" → "RNAV approach" (Voxtral: /v/→/l/)
+    {"rmp",   "rnp"},  // "RMP approach" → "RNP approach"
     {"t7", "descent"}, // Voxtral: "T7" for "descent" in readbacks
     {"tpcat", "tipik"}, // "TPCAT" → "TIPIK" (Voxtral waypoint garble)
+    // ATC facility name mishearings:
+    {"race", "reims"},    // "Race radar/information" → "Reims" (Voxtral: /ʁɛ̃s/→/reɪs/)
     // Common ATC word mishearings:
     {"content", "contact"}, // "content tower" → "contact tower"
 };
@@ -244,7 +248,9 @@ static const std::unordered_map<std::string, std::string> kWordAliases = {
 // then).
 static const std::vector<std::pair<std::string, std::string>> kPhraseAliases = {
     {"stopped up", "startup"}, // "stopped up approved" → "startup approved"
-    {"rance radar", "reims radar"}, // "Rance radar" → "Reims radar" (Voxtral phonetic map)
+    {"rance radar",       "reims radar"},       // Voxtral: "Rance" for "Reims"
+    {"rance information", "reims information"}, // Voxtral: "Rance Information" mishearing
+    {"race information",  "reims information"}, // Voxtral: "Race Information" mishearing
     {"chamber area",
      "chambery"},              // "chamber area approach" → "chambery approach"
     {"romeo mayrou", "romeo"}, // "rome, mayrou" (Voxtral split) → "romeo"
@@ -252,6 +258,8 @@ static const std::vector<std::pair<std::string, std::string>> kPhraseAliases = {
     {"post it", "report"},     // "post it established" → "report established"
     {"i approach", "approach"},   // "I approach" → "approach"
     {"this approach", "approach"}, // "This approach" → "approach"
+    {"air nav",           "rnav"},           // Voxtral: "Air Nav" for "RNAV" (French accent)
+    {"rnav november",     "rnav runway"},    // Voxtral: "runway" → "November" before runway number
     {"arnold approach",   "rnav approach"}, // Voxtral phonetic garble of "RNAV"
     {"armature approach", "rnav approach"}, // Voxtral: "armature" for "RNAV"
     // Voxtral mishears "two" as "to" in frequencies — anchor with "decimal"
@@ -302,7 +310,8 @@ static std::vector<std::string> split_words(const std::string &s) {
 static std::string apply_phonetic_aliases(const std::string &s) {
   // Word-level pass.
   auto words = split_words(s);
-  for (auto &w : words) {
+  for (size_t i = 0; i < words.size(); ++i) {
+    auto &w = words[i];
     // Strip leading/trailing punctuation from each token so Voxtral commas
     // ("one to one, decimal") don't prevent word-alias and phrase-alias matches.
     while (!w.empty() && std::ispunct(static_cast<unsigned char>(w.back())))
@@ -311,6 +320,20 @@ static std::string apply_phonetic_aliases(const std::string &s) {
       w.erase(w.begin());
     if (w.empty())
       continue;
+    // Voxtral substitutes "Romeo" → "runway" in callsign context, e.g.
+    // "Romeo Charlie" → "runway Charlie".  Detect by checking the next
+    // token: if it is a NATO phonetic letter (not a digit or spoken-number
+    // word), "runway" here is the callsign letter R, not a runway instruction.
+    if (w == "runway" && i + 1 < words.size()) {
+      const auto &nxt = words[i + 1];
+      bool nxt_is_phonetic =
+          std::any_of(kPhoneticAlphabet.begin(), kPhoneticAlphabet.end(),
+                      [&](const std::string &p) { return p == nxt; });
+      if (nxt_is_phonetic) {
+        w = "romeo";
+        continue;
+      }
+    }
     auto it = kWordAliases.find(w);
     if (it != kWordAliases.end())
       w = it->second;
@@ -324,6 +347,27 @@ static std::string apply_phonetic_aliases(const std::string &s) {
       out += ' ';
     out += w;
   }
+  // Expand Voxtral "r9NN" merged token (RNAV + runway number fused into one word).
+  // e.g. "r907" → "rnav 07", "r924" → "rnav 24".
+  {
+    size_t pos = 0;
+    while (pos + 3 < out.size()) {
+      if (out[pos] == 'r' && out[pos+1] == '9' &&
+          std::isdigit(static_cast<unsigned char>(out[pos+2])) &&
+          std::isdigit(static_cast<unsigned char>(out[pos+3]))) {
+        bool at_start = (pos == 0 || out[pos-1] == ' ');
+        bool at_end   = (pos+4 == out.size() || out[pos+4] == ' ');
+        if (at_start && at_end) {
+          std::string rwy = out.substr(pos+2, 2);
+          out.replace(pos, 4, "rnav " + rwy);
+          pos += 7; // "rnav " (5) + 2-digit runway
+          continue;
+        }
+      }
+      ++pos;
+    }
+  }
+
   // Phrase-level pass (multi-word substitutions).
   for (const auto &[from, to] : kPhraseAliases) {
     size_t pos = 0;
