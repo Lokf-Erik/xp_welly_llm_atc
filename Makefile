@@ -19,6 +19,9 @@ IMGUI_SENTINEL  := vendor/imgui/imgui.h
 JSON_SENTINEL   := vendor/json.hpp
 CATCH2_SENTINEL := vendor/catch2/catch_amalgamated.hpp
 
+# SkunkCrafts Updater staging dir (under build/, already gitignored).
+SKUNK_DIR := build/skunkcrafts
+
 # One sentinel for the three submodule trees (whisper.cpp, llama.cpp,
 # Piper). They are all pulled in by a single
 # `git submodule update --init --recursive` invocation, so tracking
@@ -41,7 +44,7 @@ LINT_EXCLUDE := src/audio/audio_input_coreaudio.cpp
 endif
 LINT_SOURCES := $(filter-out $(LINT_EXCLUDE),$(wildcard src/main.cpp src/*/*.cpp))
 
-.PHONY: all help setup setup-cloud build install install-mac install-linux install-data package clean distclean format lint sanitize release release-build cleanup-tags cleanup-branches cleanup-runs cleanup-cache repl run-repl ifr-repl run-ifr-repl test test-unit test-scenarios ci-remote win-artifact
+.PHONY: all help setup setup-cloud build install install-mac install-linux install-data package clean distclean format lint sanitize release release-build cleanup-tags cleanup-branches cleanup-runs cleanup-cache repl run-repl ifr-repl run-ifr-repl test test-unit test-scenarios ci-remote win-artifact skunkcrafts
 
 .DEFAULT_GOAL := help
 
@@ -69,6 +72,7 @@ help:
 	@echo "  make sanitize          Build atc_repl + tests with ASan+UBSan and run them"
 	@echo "  make release VERSION=X Tag and push release (writes VERSION.txt)"
 	@echo "  make release-build     Build plugin with RELEASE=ON (embeds VERSION.txt)"
+	@echo "  make skunkcrafts       Stage a SkunkCrafts Updater release tree from the installed plugin"
 	@echo "  make cleanup-tags      Prune local tags no longer on origin"
 	@echo "  make cleanup-branches  Prune local branches whose remote is gone"
 	@echo "  make cleanup-runs      Delete all GitHub Actions runs except the newest per workflow"
@@ -562,6 +566,32 @@ release:
 release-build:
 	@$(MAKE) build RELEASE_FLAG=-DRELEASE=ON
 	@echo "Done. Universal release build with version from VERSION.txt."
+
+# ── SkunkCrafts Updater staging (local test) ──────────────────────────────────
+# Stages a publishable release tree from the INSTALLED plugin and writes the
+# SkunkCrafts control files into it. CI does not call this (there's no installed
+# plugin in CI); the package job runs generate.py against its own staged bundle.
+# The rsync --exclude list must mirror generate.py's IGNORE_GLOBS.
+skunkcrafts:
+	@if [ ! -d "$(PLUGIN_DIR)" ]; then \
+	    echo "Plugin not installed at '$(PLUGIN_DIR)'. Run 'make install' first."; exit 1; \
+	fi
+	@VER="$(VERSION)"; \
+	if [ -z "$$VER" ] && [ -f VERSION.txt ]; then VER="$$(cat VERSION.txt | tr -d '[:space:]')"; fi; \
+	if [ -z "$$VER" ]; then \
+	    echo "No version. Set VERSION=x.y.z or populate VERSION.txt."; exit 1; \
+	fi; \
+	echo "=== Staging SkunkCrafts release tree ($$VER) ==="; \
+	rm -rf "$(SKUNK_DIR)"; mkdir -p "$(SKUNK_DIR)"; \
+	rsync -a \
+	    --exclude 'Resources/models/' \
+	    --exclude 'Resources/espeak-ng-data/' \
+	    --exclude '.DS_Store' \
+	    --exclude 'skunkcrafts_updater*' \
+	    "$(PLUGIN_DIR)/" "$(SKUNK_DIR)/"; \
+	python3 tools/skunkcrafts/generate.py --tree "$(SKUNK_DIR)" --version "$$VER"; \
+	echo "Staged release tree at $(SKUNK_DIR)/ (version $$VER)."; \
+	echo "Publish its contents to the 'release' branch / your update host."
 
 # ── Cleanup Tags ──────────────────────────────────────────────────────────────
 cleanup-tags:
