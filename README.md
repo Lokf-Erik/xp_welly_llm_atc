@@ -2,21 +2,30 @@
 
 ![Welly's ATC panel with ATIS broadcast at LSZB Bern-Belp](images/atc-atis-example.jpg)
 
-> **Triple-backend X-Plane 12 ATC plugin: local inference, OpenAI Cloud, or Mistral Cloud — your choice.**
+> **Cross-platform X-Plane 12 ATC plugin — runs on macOS, Windows and
+> Linux. OpenAI Cloud, Mistral Cloud, or (Apple Silicon, from source)
+> fully offline local inference. Your choice.**
 >
-> - **Local (Apple Silicon, default)** — `whisper.cpp` (Metal) + `llama.cpp`
->   (Metal) + Piper TTS, fully offline once the models are downloaded.
->   No daemons, no helper apps, no API keys.
-> - **OpenAI Cloud (any Mac)** — Whisper API + Chat Completions +
->   TTS API. Bring your own API key (stored in the macOS Keychain).
-> - **Mistral Cloud (any Mac)** — Voxtral STT + Mistral Chat
+> - **OpenAI Cloud (all platforms)** — Whisper API + Chat Completions +
+>   TTS API. Bring your own API key (stored in the OS credential store:
+>   macOS Keychain, Windows Credential Manager, or a 0600 file on Linux).
+> - **Mistral Cloud (all platforms)** — Voxtral STT + Mistral Chat
 >   Completions + Voxtral TTS. Bring your own API key (separate
->   Keychain entry so OpenAI and Mistral keys coexist). Cheaper per
+>   credential entry so OpenAI and Mistral keys coexist). Cheaper per
 >   token than OpenAI.
+> - **Local, fully offline (Apple Silicon only, from source)** —
+>   `whisper.cpp` (Metal) + `llama.cpp` (Metal) + Piper TTS, no daemons,
+>   no helper apps, no API keys. **Not in the pre-built releases** (those
+>   are cloud-only on every platform so CI stays fast) — enable it by
+>   building from source on an Apple Silicon Mac (`make build`, see
+>   [Build From Source](#build-from-source)).
 >
-> The plugin ships as a **universal binary**: the arm64 slice carries
-> all three backends, the x86_64 slice is cloud-only (OpenAI or
-> Mistral). The user picks the mode at runtime in Settings.
+> The **pre-built releases are cloud-only** on all three platforms: a
+> macOS universal `.xpl` (arm64 + x86_64), a Windows `win_x64` `.xpl`,
+> and a Linux `lin_x64` `.xpl`. X-Plane loads whichever matches the host;
+> you pick OpenAI or Mistral at runtime in Settings. Platform install
+> notes: [README-WINDOWS.md](README-WINDOWS.md) ·
+> [README-LINUX.md](README-LINUX.md).
 >
 > The spike-phase architecture and per-backend measurements are archived in
 > [`docs/architecture-analysis.md`](docs/architecture-analysis.md) and
@@ -225,9 +234,10 @@ and uses matching phraseology.
 ## Features
 
 - **Push-to-Talk** — bound via X-Plane command binding (keyboard or joystick)
-- **Triple-backend inference** — pick **Local** (Apple Silicon only),
-  **OpenAI Cloud**, or **Mistral Cloud** (both any Mac, BYO API key)
-  in the Settings tab. Switch at runtime, no plugin restart. Every
+- **Triple-backend inference** — pick **OpenAI Cloud** or **Mistral
+  Cloud** (all platforms, BYO API key), or **Local** (Apple Silicon
+  only, from-source build) in the Settings tab. Switch at runtime, no
+  plugin restart. Every
   inference call is tagged with `[STT-LOCAL]` / `[STT-OPENAI]` /
   `[STT-MISTRAL]` (and equivalent for LM/TTS) in X-Plane's `Log.txt`
   so you can audit which side served each request.
@@ -319,20 +329,32 @@ and uses matching phraseology.
 
 ## Hardware Requirements
 
-The plugin ships as a **universal binary** — one `.xpl`, two slices.
-X-Plane automatically loads whichever matches the host.
+Pre-built releases are **cloud-only** on every platform (OpenAI or
+Mistral). X-Plane automatically loads the slice that matches the host.
 
-| Mac | Slice loaded | Backends available |
-|---|---|---|
-| Apple Silicon (M1 / M2 / M3 / M4) | `arm64` | **Local**, **OpenAI Cloud**, *or* **Mistral Cloud** |
-| Intel (x86_64) | `x86_64` | **Cloud only** — **OpenAI** or **Mistral** (local inference needs Metal + Apple Silicon) |
+| Platform | Slice | Release backends | Local (offline) inference |
+|---|---|---|---|
+| macOS Apple Silicon (M1–M4) | `mac_x64` universal `.xpl` (arm64) | OpenAI / Mistral Cloud | **Yes — from source only** (`make build`; Metal whisper.cpp + llama.cpp + Piper) |
+| macOS Intel | `mac_x64` universal `.xpl` (x86_64) | OpenAI / Mistral Cloud | No (needs Metal + Apple Silicon) |
+| Windows 10 / 11 (x64) | `win_x64` | OpenAI / Mistral Cloud | No |
+| Linux (x86_64) | `lin_x64` | OpenAI / Mistral Cloud | No in the release¹ |
 
-| Resource | Local mode | OpenAI / Mistral Cloud mode |
+> **Local inference is Apple Silicon only** and is **not** shipped in the
+> pre-built releases — they are cloud-only on all platforms so CI stays
+> fast (the whisper/llama/Piper compile is the long pole). To run fully
+> offline (Metal-accelerated), build from source on an Apple Silicon Mac —
+> see [Build From Source](#build-from-source).
+>
+> ¹ The Linux code path *can* build CPU-only local inference from source
+> (see [README-LINUX.md](README-LINUX.md)); it is simply not part of the
+> cloud-only release bundle.
+
+| Resource | Cloud mode (all platforms) | Local mode (Apple Silicon, from source) |
 |---|---|---|
-| RAM | 32 GB recommended (X-Plane 12 + ~3 GB headroom for the inference stack) | 16 GB (no model in RAM — calls are stateless HTTP requests) |
-| Disk | ~2.5 GB free for the bundled models | ~50 MB for the plugin bundle (no models downloaded) |
-| GPU | Any Metal-capable GPU on the same Apple Silicon chip | not used |
-| Network | not used at runtime (one-time model download from HuggingFace) | required — every PTT release triggers HTTPS calls to `api.openai.com` or `api.mistral.ai` |
+| RAM | 16 GB (no model in RAM — stateless HTTP requests) | 32 GB recommended (X-Plane 12 + ~3 GB for the inference stack) |
+| Disk | ~50 MB for the plugin bundle (no models downloaded) | ~2.5 GB free for the models |
+| GPU | not used | Metal GPU on the Apple Silicon chip |
+| Network | required — every PTT release triggers HTTPS to `api.openai.com` or `api.mistral.ai` | not used at runtime (one-time model download from HuggingFace) |
 
 Both cloud modes cost money per request (STT + LM + TTS APIs).
 Mistral is typically cheaper per token than OpenAI (`mistral-small`
@@ -345,10 +367,12 @@ accordingly.
 
 | Item | Requirement |
 |---|---|
-| macOS | **13.3 or later** (onnxruntime 1.22.0 requires this on the arm64 slice; the x86_64 slice inherits the same deployment target so the lipo'd binary stays consistent) |
+| macOS | **13.3 or later** (a from-source local build needs onnxruntime 1.22.0; the x86_64 slice inherits the same deployment target so the lipo'd binary stays consistent) |
+| Windows | **Windows 10 / 11 (x64)** — cloud-only. See [README-WINDOWS.md](README-WINDOWS.md). |
+| Linux | **x86_64**, X-Plane 12, PulseAudio/PipeWire — cloud-only in the release. See [README-LINUX.md](README-LINUX.md). |
 | X-Plane | X-Plane 12 (12.0 or later) |
-| OpenAI / Mistral account | Only if you want to use a cloud mode — needs an API key with billing enabled for the respective provider. Local mode has no cloud dependency. |
-| For building from source | CMake 3.26+, Homebrew LLVM (`brew install llvm`), Xcode Command Line Tools |
+| OpenAI / Mistral account | Required for the cloud modes (i.e. for every pre-built release) — an API key with billing enabled for the respective provider. Only a from-source Apple Silicon local build has no cloud dependency. |
+| For building from source (macOS) | CMake 3.26+, Homebrew LLVM (`brew install llvm`), Xcode Command Line Tools. Windows builds via MSVC in CI; Linux via GCC/Clang — see the per-platform READMEs. |
 
 ## IFR ATC — What's Included
 
@@ -453,43 +477,39 @@ Without a SimBrief OFP the plugin falls back to:
 
 ## Quick Start (pre-built release)
 
-1. Download `xp_wellys_atc.zip` from the GitHub Releases page. One bundle
-   carries both the macOS universal slice (arm64 + x86_64) and the Linux
-   x86_64 slice — X-Plane loads whichever matches the host.
-2. Extract into `X-Plane 12/Resources/plugins/`. Result:
+1. Download `xp_wellys_atc.zip` from the GitHub Releases page. One
+   cloud-only bundle carries the macOS universal slice (arm64 + x86_64),
+   the Windows `win_x64` slice, and the Linux `lin_x64` slice — X-Plane
+   loads whichever matches the host.
+2. Extract into `X-Plane 12/Resources/plugins/`. Result (cloud-only —
+   each `.xpl` is self-contained, no model files or dylibs):
    ```
    X-Plane 12/Resources/plugins/xp_wellys_atc/
-     ├── mac_x64/
-     │     ├── xp_wellys_atc.xpl       (universal: arm64 + x86_64)
-     │     ├── libpiper.dylib          (used by arm64 slice only)
-     │     ├── libonnxruntime.1.22.0.dylib
-     │     └── libonnxruntime.dylib
-     ├── lin_x64/
-     │     ├── xp_wellys_atc.xpl       (Linux x86_64)
-     │     ├── libpiper.so
-     │     └── libonnxruntime.so*
-     ├── Resources/
-     │     └── espeak-ng-data/   (~19 MB, shared by all local-inference slices)
+     ├── mac_x64/xp_wellys_atc.xpl       (universal: arm64 + x86_64)
+     ├── win_x64/xp_wellys_atc.xpl       (Windows x64)
+     ├── lin_x64/xp_wellys_atc.xpl       (Linux x86_64)
      └── data/
            └── (ATC profile bundles, prompt templates, VRP database, etc.)
    ```
+   > A **from-source Apple Silicon local build** additionally carries
+   > `mac_x64/libpiper.dylib` + `libonnxruntime*.dylib`, a
+   > `Resources/espeak-ng-data/` folder, and (downloaded on first launch)
+   > `Resources/models/`. The pre-built release has none of these.
 3. Launch X-Plane. Open the plugin window via *Plugins → Welly's ATC*.
-4. **Pick your backend** in the **Settings** tab:
-   - **Local** (Apple Silicon, default): the **Models** tab shows three
-     rows in red. Click **Download all missing** — the plugin pulls
-     ~2.0 GB from HuggingFace over HTTPS. Resumable; cancellable;
-     SHA256-verified after each file. Once all rows show **Ready**
-     (green), the PTT-disabled banner on the Status tab disappears.
-   - **OpenAI Cloud** (any Mac): paste your OpenAI API key into the
+4. **Pick your backend** in the **Settings** tab (a pre-built release
+   offers OpenAI and Mistral; **Local** appears only in a from-source
+   Apple Silicon build):
+   - **OpenAI Cloud** (all platforms): paste your OpenAI API key into the
      **OpenAI API Key** field in Settings (use the `[Paste]` button —
      Cmd+V inside X-Plane's ImGui context is unreliable). Click
-     **Save Key**. The key is stored in the macOS Keychain under
-     service `com.xp_wellys_atc.openai`. PTT is enabled immediately;
-     no model download.
-   - **Mistral Cloud** (any Mac): paste your Mistral API key into the
+     **Save Key**. The key is stored in the OS credential store under
+     service `com.xp_wellys_atc.openai` (macOS Keychain / Windows
+     Credential Manager / 0600 file on Linux). PTT is enabled
+     immediately; no model download.
+   - **Mistral Cloud** (all platforms): paste your Mistral API key into the
      **Mistral API key** field in Settings (same `[Paste]` button
      pattern). Click **Save Key##mistral**. The key is stored under a
-     separate Keychain entry `com.xp_wellys_atc.mistral`, so the
+     separate credential entry `com.xp_wellys_atc.mistral`, so the
      OpenAI key (if any) stays untouched and you can flip-flop
      between providers without re-pasting. PTT is enabled
      immediately; the three voice slots default to ICAO-friendly
@@ -590,14 +610,20 @@ Implementation:
 
 ## Build From Source
 
+This is the **macOS local build** (Apple Silicon): it compiles the
+whisper.cpp / llama.cpp / Piper backends so the plugin can run fully
+offline. For **Windows** and **Linux** — both cloud-only — follow
+[README-WINDOWS.md](README-WINDOWS.md) and [README-LINUX.md](README-LINUX.md)
+(Windows builds via MSVC in CI; Linux via `make build`).
+
 ```sh
 git clone --recurse-submodules <repo-url>
 cd xp_welly_llm_atc
 make setup     # X-Plane SDK, Dear ImGui, nlohmann/json, Catch2, spike submodules
 make build     # Universal Release build → build/xp_wellys_atc.xpl (arm64
                # with all three backends + x86_64 cloud-only, lipo'd into
-               # one .xpl). This is now the only build target — there is
-               # no arm64-only fast-path anymore.
+               # one .xpl). This is the local-inference build; the
+               # pre-built releases are cloud-only (make setup-cloud).
 make install   # Code-sign + install to X-Plane plugins directory
 ```
 
@@ -844,12 +870,18 @@ PTT remains active in parallel.
 ```sh
 make all           # clean + format + build + lint + test (full local CI)
 make build         # universal: arm64 (local + both clouds) + x86_64 (clouds only), lipo'd
+make setup         # deps incl. local-inference submodules
+make setup-cloud   # deps WITHOUT the whisper/llama/Piper submodules (cloud-only; used by CI)
 make release-build # same as `make build` but passes -DRELEASE=ON (embeds VERSION.txt)
 make test          # unit tests + scenario tests
 make install       # code-sign + install to X-Plane
 make repl          # build the headless atc_repl tool
 make format        # clang-format
 make lint          # clang-tidy (some rules promoted to errors)
+make ci-remote     # push current branch + trigger the cloud-only CI (mac/win/linux) via gh
+make win-artifact  # download the newest Windows CI plugin folder -> dist-win/
+make skunkcrafts   # stage a SkunkCrafts Updater release tree from the installed plugin
+make cleanup-cache # delete GitHub Actions caches (rebuilt on next run)
 make clean         # remove build/, build-arm64/, build-x86_64/, build-lint/, build-sanitize/
 make distclean     # also remove sdk/, vendor/
 ```
@@ -858,7 +890,7 @@ make distclean     # also remove sdk/, vendor/
 
 | Limitation | Impact | Effort |
 |---|---|---|
-| **Local inference is Apple Silicon only** | Intel Macs can run the plugin via the x86_64 slice but only in OpenAI or Mistral Cloud mode (requires API key + billing) | Resolved by the universal binary; lifting the Intel restriction for Local mode would need Metal alternatives + an x86_64 onnxruntime build |
+| **Local inference is Apple Silicon only, and only from source** | Pre-built releases are cloud-only on every platform (macOS/Windows/Linux) — OpenAI or Mistral, requires API key + billing. Fully-offline local inference (Metal whisper/llama/Piper) is available only by building from source on an Apple Silicon Mac. | Intel Macs / Windows would need Metal alternatives + a non-arm64 onnxruntime; shipping local in the release would re-add the ~50-min CI build. Linux can build CPU-local from source today (see README-LINUX.md). |
 | **Only English supported** | Profiles cover EN (EU / US ICAO-FAA phraseology). Other languages (FR, IT, ES, NL, …) are not modelled — Whisper would transcribe them, but there is no phraseology profile, no LM prompt, and no language-matched Piper voice. | Medium per language — clone a profile under `data/atc_profiles/<code>/`, source AIP phraseology, add a Piper voice (Local) and validate Mistral/OpenAI prompts. Cloud STT/LM are already multilingual. |
 | **"via Alpha" hardcoded** — taxiway name is always Alpha | Unrealistic at airports with different taxiway layouts | High — would need taxiway data from apt.dat or WED |
 | **No wake-turbulence spacing** — sequencing in v2.2 picks number-by-distance only, no Light/Medium/Heavy separation | Acceptable for GA pattern work; missing for mixed-weight ops | Phase 5 on roadmap |
@@ -997,15 +1029,28 @@ linked libraries, their licenses, and how they are vendored.
 
 ### CI Pipeline
 
-The GitHub Actions pipeline runs in two situations only:
+All CI builds are **cloud-only** (`XPWELLYS_USE_LOCAL_INFERENCE=OFF`) —
+the whisper/llama/Piper submodules are neither fetched nor compiled, so a
+full run finishes in minutes instead of ~50. Local inference is a
+build-from-source feature (`make build` on Apple Silicon), not part of any
+CI artifact.
+
+The GitHub Actions pipeline runs in three situations:
 
 - **Pull Request against `main`** — runs the test gate once (unit + scenario
-  suites, on Linux since the engine is SDK-free), then builds the **macOS
-  universal** and **Linux** plugins in parallel before the change can be merged
+  suites, on Linux since the engine is SDK-free), then builds the cloud-only
+  **macOS universal**, **Windows** and **Linux** plugins in parallel before
+  the change can be merged.
+- **Manual dispatch** (`workflow_dispatch`, via `make ci-remote`) — same
+  build set on demand for the current branch; `make win-artifact` pulls the
+  resulting drop-in Windows plugin folder.
 - **Push of a version tag `v*`** — same gate + builds, then a `package` job
-  merges both platform slices into one X-Plane plugin folder and publishes a
-  single GitHub Release ZIP (`xp_wellys_atc.zip`) containing `mac_x64/` +
-  `lin_x64/` alongside the shared `data/`, `docs/` and `Resources/`
+  merges the `mac_x64/`, `win_x64/` and `lin_x64/` slices with the shared
+  `data/` + `docs/` into one X-Plane plugin folder, publishes a single
+  GitHub Release ZIP (`xp_wellys_atc.zip`), and force-pushes the tree to the
+  `release` branch that the **SkunkCrafts Updater** serves for in-sim
+  updates (`skunkcrafts_updater.cfg` is bundled; user `settings.json` is
+  never overwritten).
 
 Direct pushes to `main` no longer trigger a build. All code changes must go
 through a Pull Request.
@@ -1015,7 +1060,7 @@ through a Pull Request.
 Branch protection requires:
 
 1. PR (no direct pushes)
-2. Status checks `test`, `build-macos` and `build-linux` passing
+2. Status checks `test`, `build-macos`, `build-linux` and `build-windows` passing
 3. PR branch up to date with main
 
 ## License
