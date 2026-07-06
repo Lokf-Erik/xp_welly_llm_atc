@@ -59,6 +59,7 @@ TTS API.
 
 ## Table of Contents
 
+- [What's New 4.3.0](#whats-new-430)
 - [What's New 4.2.1](#whats-new-421)
 - [Features](#features)
 - [Hardware Requirements](#hardware-requirements)
@@ -80,6 +81,41 @@ TTS API.
 - [Development Workflow](#development-workflow)
 - [License](#license)
 - [Flight schools and commercial training](#flight-schools-and-commercial-training)
+
+## What's New 4.3.0
+
+Release 4.3.0 takes the plugin cross-platform and self-updating: a native
+**Windows** build joins macOS and Linux, and the **SkunkCrafts Updater**
+lets you pull new releases from inside X-Plane instead of re-downloading
+the ZIP by hand.
+
+### Windows support
+
+Welly's ATC now ships a native Windows 10 / 11 (x64) slice
+(`win_x64/xp_wellys_atc.xpl`) alongside the macOS and Linux slices, all
+in the same release ZIP — X-Plane loads whichever matches the host.
+
+- Cloud-only (OpenAI or Mistral) — the same runtime backend switch as the
+  other platforms.
+- WASAPI microphone capture and Windows **Credential Manager** for the API
+  keys (the cross-platform equivalent of the macOS Keychain / Linux 0600
+  file).
+- libcurl is linked statically (vcpkg `x64-windows-static`, Schannel TLS),
+  so the `.xpl` ships with **zero extra DLLs**.
+- Install notes: [README-WINDOWS.md](README-WINDOWS.md).
+
+### SkunkCrafts Updater (in-sim updates)
+
+The release bundle now carries a `skunkcrafts_updater.cfg`, so an install
+that has the **SkunkCrafts Updater** plugin can discover and apply new
+Welly's ATC versions from inside the sim — no manual ZIP download.
+
+- Each release publishes the plugin tree to a dedicated `release` branch
+  that the updater serves over `raw.githubusercontent`.
+- `data/settings.json` is marked *once-only*, so an update never
+  overwrites your saved configuration (callsign, backend mode, voices).
+- Stage a matching tree from an installed plugin locally with
+  `make skunkcrafts`.
 
 ## What's New 4.2.1
 
