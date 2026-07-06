@@ -7,6 +7,10 @@ on:
   push:
     tags:
       - 'v*'
+  # Manual trigger for on-demand builds of the current branch — used by
+  # `make ci-remote`. Produces the downloadable xp_wellys_atc-win artifact
+  # without needing a PR or a release tag.
+  workflow_dispatch:
 
 jobs:
   # ── Test gate (runs once) ───────────────────────────────────────────────
@@ -281,6 +285,27 @@ jobs:
           name: slice-windows
           path: dist/windows
           retention-days: 1
+
+      # Ready-to-drop plugin folder for every run (PR / dispatch / tag), so
+      # `make win-artifact` can pull a runnable Windows build without a
+      # release. Cloud-only: just the .xpl + data/ (no Resources/models).
+      - name: Assemble drop-in Windows plugin folder
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $stage = "dist-win/xp_wellys_atc"
+          New-Item -ItemType Directory -Force -Path "$stage/win_x64","$stage/data/vrps" | Out-Null
+          Copy-Item build-win/xp_wellys_atc.xpl "$stage/win_x64/"
+          Copy-Item data/settings.json,data/models_catalog.json,data/atc_prompt_templates.json "$stage/data/"
+          Copy-Item -Recurse data/atc_profiles "$stage/data/"
+          Copy-Item data/vrps/airport_vrps.json "$stage/data/vrps/"
+
+      - name: Upload drop-in Windows plugin (xp_wellys_atc-win)
+        uses: actions/upload-artifact@v4
+        with:
+          name: xp_wellys_atc-win
+          path: dist-win
+          retention-days: 7
 
   # ── Package + release (one combined bundle) ─────────────────────────────
   # Merges all platform slices with the shared data/ + docs/ + Resources/

@@ -41,7 +41,7 @@ LINT_EXCLUDE := src/audio/audio_input_coreaudio.cpp
 endif
 LINT_SOURCES := $(filter-out $(LINT_EXCLUDE),$(wildcard src/main.cpp src/*/*.cpp))
 
-.PHONY: all help setup build install install-mac install-linux install-data package clean distclean format lint sanitize release release-build cleanup-tags cleanup-branches cleanup-runs repl run-repl ifr-repl run-ifr-repl test test-unit test-scenarios
+.PHONY: all help setup build install install-mac install-linux install-data package clean distclean format lint sanitize release release-build cleanup-tags cleanup-branches cleanup-runs repl run-repl ifr-repl run-ifr-repl test test-unit test-scenarios ci-remote win-artifact
 
 .DEFAULT_GOAL := help
 
@@ -71,6 +71,8 @@ help:
 	@echo "  make cleanup-tags      Prune local tags no longer on origin"
 	@echo "  make cleanup-branches  Prune local branches whose remote is gone"
 	@echo "  make cleanup-runs      Delete all GitHub Actions runs except the newest per workflow"
+	@echo "  make ci-remote         Trigger the GitHub CI (mac + Windows slice) on the current branch via gh (builds the PUSHED state)"
+	@echo "  make win-artifact      Download the newest Windows CI artifact (xp_wellys_atc-win) via gh -> dist-win/"
 	@echo "  make clean             Remove build/, build-lint/ and build-sanitize/"
 	@echo "  make distclean         clean + remove sdk/ and vendor/ (everything 'make setup' installed)"
 	@echo "  make help              Show this help"
@@ -575,6 +577,43 @@ cleanup-runs:
 	        | xargs -I {} gh run delete {}; \
 	done
 	@echo "Cleanup complete."
+
+# ── Remote CI (Windows build via GitHub Actions) ──────────────────────────────
+# The Windows slice can only be compiled by CI (no local MSVC toolchain on a
+# Mac). `ci-remote` pushes the current branch and dispatches the build
+# workflow against the pushed state; `win-artifact` downloads the resulting
+# drop-in Windows plugin folder into dist-win/.
+ci-remote:
+	@command -v gh >/dev/null 2>&1 || { \
+	    echo "gh not found. Install with: brew install gh"; exit 1; }
+	@BRANCH=$$(git rev-parse --abbrev-ref HEAD); \
+	echo "Pushing $$BRANCH and dispatching CI (builds the pushed state)..."; \
+	git push -u origin "$$BRANCH"; \
+	gh workflow run build.yml --ref "$$BRANCH" || { \
+	    echo ""; \
+	    echo "NOTE: workflow_dispatch is only accepted once build.yml (with the"; \
+	    echo "'workflow_dispatch' trigger) exists on the default branch (main)."; \
+	    echo "Until then, open a PR for this branch — the PR build produces the"; \
+	    echo "same xp_wellys_atc-win artifact that 'make win-artifact' downloads."; \
+	    exit 1; }
+	@echo "Dispatched. Watch: gh run watch  (or: make win-artifact once green)"
+
+win-artifact:
+	@command -v gh >/dev/null 2>&1 || { \
+	    echo "gh not found. Install with: brew install gh"; exit 1; }
+	@BRANCH=$$(git rev-parse --abbrev-ref HEAD); \
+	RUN_ID=$$(gh run list --workflow build.yml --branch "$$BRANCH" --limit 1 \
+	    --json databaseId -q '.[0].databaseId'); \
+	if [ -z "$$RUN_ID" ]; then \
+	    echo "No CI run found for branch $$BRANCH. Run 'make ci-remote' first."; \
+	    exit 1; \
+	fi; \
+	echo "Downloading xp_wellys_atc-win from run $$RUN_ID -> dist-win/ ..."; \
+	rm -rf dist-win; mkdir -p dist-win; \
+	gh run download "$$RUN_ID" -n xp_wellys_atc-win -D dist-win || { \
+	    echo "Artifact not available yet (run still in progress or failed)."; \
+	    echo "Check status: gh run view $$RUN_ID"; exit 1; }
+	@echo "Done. Copy dist-win/xp_wellys_atc/ into X-Plane 12/Resources/plugins/"
 
 # ── Clean ─────────────────────────────────────────────────────────────────────
 clean:
