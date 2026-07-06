@@ -41,7 +41,7 @@ LINT_EXCLUDE := src/audio/audio_input_coreaudio.cpp
 endif
 LINT_SOURCES := $(filter-out $(LINT_EXCLUDE),$(wildcard src/main.cpp src/*/*.cpp))
 
-.PHONY: all help setup build install install-mac install-linux install-data package clean distclean format lint sanitize release release-build cleanup-tags cleanup-branches cleanup-runs repl run-repl ifr-repl run-ifr-repl test test-unit test-scenarios ci-remote win-artifact
+.PHONY: all help setup setup-cloud build install install-mac install-linux install-data package clean distclean format lint sanitize release release-build cleanup-tags cleanup-branches cleanup-runs repl run-repl ifr-repl run-ifr-repl test test-unit test-scenarios ci-remote win-artifact
 
 .DEFAULT_GOAL := help
 
@@ -54,6 +54,7 @@ help:
 	@echo "  make                   Show this help (default)"
 	@echo "  make all               clean + format + build + lint"
 	@echo "  make setup             Init submodules + download X-Plane SDK, Dear ImGui, nlohmann/json, Catch2"
+	@echo "  make setup-cloud       Setup WITHOUT local-inference submodules (cloud-only; used by CI)"
 	@echo "  make build             Build universal plugin (arm64 local+cloud, x86_64 cloud-only) -> build/xp_wellys_atc.xpl"
 	@echo "  make repl              Build headless CLI -> build/atc_repl"
 	@echo "  make run-repl          Build + run the CLI (stdin transcripts)"
@@ -80,6 +81,13 @@ help:
 # ── Setup ─────────────────────────────────────────────────────────────────────
 setup: $(SUBMODULES_SENTINEL) $(SDK_SENTINEL) $(IMGUI_SENTINEL) $(JSON_SENTINEL) $(CATCH2_SENTINEL)
 	@echo "Setup complete. Run 'make build' to compile."
+
+# Cloud-only setup: SDK + ImGui + json + Catch2, WITHOUT the local-inference
+# submodules (whisper.cpp / llama.cpp / Piper). Used by CI, which builds
+# cloud-only and never compiles those trees — skipping the multi-GB submodule
+# fetch is the bulk of the CI speedup.
+setup-cloud: $(SDK_SENTINEL) $(IMGUI_SENTINEL) $(JSON_SENTINEL) $(CATCH2_SENTINEL)
+	@echo "Cloud-only setup complete (no local-inference submodules)."
 
 $(SUBMODULES_SENTINEL):
 	@if [ ! -d .git ]; then \
@@ -217,9 +225,11 @@ else
 endif
 
 # ── REPL (headless CLI) ───────────────────────────────────────────────────────
-repl: $(SUBMODULES_SENTINEL) $(SDK_SENTINEL) $(IMGUI_SENTINEL) $(JSON_SENTINEL) $(CATCH2_SENTINEL)
+repl: $(SDK_SENTINEL) $(IMGUI_SENTINEL) $(JSON_SENTINEL) $(CATCH2_SENTINEL)
 	@echo "=== Building atc_repl ==="
-	cmake -B build -DCMAKE_BUILD_TYPE=Release -Wno-dev
+	# SDK-free dev tool — LOCAL_INFERENCE=OFF keeps it submodule-independent.
+	cmake -B build -DCMAKE_BUILD_TYPE=Release \
+	    -DXPWELLYS_USE_LOCAL_INFERENCE=OFF -Wno-dev
 	cmake --build build --target atc_repl --parallel
 	@echo ""
 	@file build/atc_repl
@@ -229,9 +239,11 @@ run-repl: repl
 	./build/atc_repl
 
 # ── IFR REPL (headless IFR approach test CLI) ─────────────────────────────────
-ifr-repl: $(SUBMODULES_SENTINEL) $(SDK_SENTINEL) $(IMGUI_SENTINEL) $(JSON_SENTINEL) $(CATCH2_SENTINEL)
+ifr-repl: $(SDK_SENTINEL) $(IMGUI_SENTINEL) $(JSON_SENTINEL) $(CATCH2_SENTINEL)
 	@echo "=== Building atc_ifr_repl ==="
-	cmake -B build -DCMAKE_BUILD_TYPE=Release -Wno-dev
+	# SDK-free dev tool — LOCAL_INFERENCE=OFF keeps it submodule-independent.
+	cmake -B build -DCMAKE_BUILD_TYPE=Release \
+	    -DXPWELLYS_USE_LOCAL_INFERENCE=OFF -Wno-dev
 	cmake --build build --target atc_ifr_repl --parallel
 	@echo ""
 	@file build/atc_ifr_repl
@@ -243,9 +255,13 @@ run-ifr-repl: ifr-repl
 # ── Tests ─────────────────────────────────────────────────────────────────────
 test: test-unit test-scenarios
 
-test-unit: $(SUBMODULES_SENTINEL) $(SDK_SENTINEL) $(IMGUI_SENTINEL) $(JSON_SENTINEL) $(CATCH2_SENTINEL)
+test-unit: $(SDK_SENTINEL) $(IMGUI_SENTINEL) $(JSON_SENTINEL) $(CATCH2_SENTINEL)
 	@echo "=== Building xp_wellys_atc unit tests ==="
-	cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=ON -Wno-dev
+	# Tests exercise the SDK-free engine only; the local backends are never
+	# linked, so LOCAL_INFERENCE=OFF is functionally identical here and keeps
+	# the configure independent of the whisper/llama/Piper submodules.
+	cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=ON \
+	    -DXPWELLYS_USE_LOCAL_INFERENCE=OFF -Wno-dev
 	cmake --build build --target xp_wellys_atc_tests --parallel
 	@echo ""
 	@echo "=== Running unit tests ==="

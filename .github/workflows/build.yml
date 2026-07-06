@@ -12,6 +12,12 @@ on:
   # without needing a PR or a release tag.
   workflow_dispatch:
 
+# CI builds cloud-only on every platform (XPWELLYS_USE_LOCAL_INFERENCE=OFF):
+# the whisper.cpp / llama.cpp / Piper trees are neither fetched nor compiled,
+# which cuts a ~50-min build to a few minutes. Released binaries therefore
+# ship OpenAI + Mistral cloud backends only; local (offline) inference is a
+# build-from-source option (`make build`), not part of the CI artifacts.
+
 jobs:
   # ── Test gate (runs once) ───────────────────────────────────────────────
   # The engine OBJECT lib and the scenario REPL are SDK-free and platform-
@@ -22,11 +28,6 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
-        with:
-          submodules: recursive
-
-      - name: Rewrite SSH submodule URLs to HTTPS
-        run: git config --global url."https://github.com/".insteadOf "git@github.com:"
 
       - name: Install Linux build dependencies
         # pkg-config + libpulse-dev are needed even for the test build: CMake
@@ -38,8 +39,8 @@ jobs:
             cmake pkg-config unzip \
             libcurl4-openssl-dev libssl-dev libpulse-dev
 
-      - name: Setup dependencies
-        run: make setup
+      - name: Setup dependencies (cloud-only — no submodules)
+        run: make setup-cloud
 
       - name: Set up ccache
         uses: hendrikmuhs/ccache-action@v1.2
@@ -51,41 +52,57 @@ jobs:
       - name: Run tests (unit + scenarios)
         run: make test
 
-  # ── macOS universal slice ───────────────────────────────────────────────
-  # Builds the universal .xpl and (on tag) stages just the mac_x64 slice plus
-  # the platform-independent espeak-ng-data. The package job merges this with
-  # the Linux slice. No release is published here.
+  # ── macOS slice (universal, cloud-only) ─────────────────────────────────
+  # PR / dispatch: fast arm64 compile check. Tag: universal arm64+x86_64
+  # cloud-only .xpl (runs on both Apple Silicon and Intel Macs), staged for
+  # the package job. No local-inference dylibs, no espeak-ng-data.
   build-macos:
     needs: test
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
-        with:
-          submodules: recursive
 
-      - name: Rewrite SSH submodule URLs to HTTPS
-        run: git config --global url."https://github.com/".insteadOf "git@github.com:"
-
-      - name: Setup dependencies
-        run: make setup
+      - name: Setup dependencies (cloud-only — no submodules)
+        run: make setup-cloud
 
       - name: Set up ccache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
-          key: ${{ runner.os }}-${{ github.job }}-${{ startsWith(github.ref, 'refs/tags/v') && 'release' || 'debug' }}
+          key: ${{ runner.os }}-${{ github.job }}
           max-size: 1500M
           variant: ccache
 
-      - name: Build (universal)
-        # `make build` always produces a universal .xpl: two CMake configures
-        # lipo'd into one build/xp_wellys_atc.xpl that carries an arm64 slice
-        # (whisper + llama + Piper + OpenAI) and an x86_64 slice (OpenAI-only).
-        # Tag pushes flip -DRELEASE=ON so VERSION.txt gets baked into both
-        # slices.
+      - name: Build (fast compile check, cloud-only)
+        # PR / manual-dispatch runs only need to prove the macOS code compiles.
+        # arm64 cloud-only finishes in a couple of minutes.
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         run: |
-          RELEASE_FLAG=""
-          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then RELEASE_FLAG="-DRELEASE=ON"; fi
-          make build RELEASE_FLAG="$RELEASE_FLAG"
+          cmake -B build-mac-fast -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DXPWELLYS_USE_LOCAL_INFERENCE=OFF \
+            -DBUILD_TESTS=OFF -Wno-dev
+          cmake --build build-mac-fast --parallel --target xp_wellys_atc
+          ccache --show-stats
+
+      - name: Build (universal, cloud-only)
+        # Release tags: build both arches cloud-only and lipo them into one
+        # universal .xpl. Both slices are fast (libcurl + frameworks only).
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          for arch in arm64 x86_64; do
+            cmake -B "build-$arch" -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_OSX_ARCHITECTURES="$arch" \
+              -DXPWELLYS_USE_LOCAL_INFERENCE=OFF \
+              -DBUILD_TESTS=OFF -Wno-dev
+            cmake --build "build-$arch" --parallel --target xp_wellys_atc
+          done
+          mkdir -p build
+          lipo -create \
+            build-arm64/xp_wellys_atc.xpl \
+            build-x86_64/xp_wellys_atc.xpl \
+            -output build/xp_wellys_atc.xpl
+          lipo -info build/xp_wellys_atc.xpl
           ccache --show-stats
 
       - name: Stage macOS slice
@@ -94,28 +111,10 @@ jobs:
           set -euo pipefail
           STAGE=dist/macos
           mkdir -p "$STAGE/mac_x64"
-          mkdir -p "$STAGE/Resources/espeak-ng-data"
-
-          cp build/xp_wellys_atc.xpl           "$STAGE/mac_x64/"
-          cp build/libpiper.dylib              "$STAGE/mac_x64/"
-          cp build/libonnxruntime.1.22.0.dylib "$STAGE/mac_x64/"
-          cp build/libonnxruntime.dylib        "$STAGE/mac_x64/"
-
-          for rp in $(otool -l "$STAGE/mac_x64/xp_wellys_atc.xpl" \
-                      | awk '/LC_RPATH/{flag=1; next} flag && /path/ {print $2; flag=0}'); do
-            install_name_tool -delete_rpath "$rp" "$STAGE/mac_x64/xp_wellys_atc.xpl" 2>/dev/null || true
-          done
-          install_name_tool -add_rpath "@loader_path" "$STAGE/mac_x64/xp_wellys_atc.xpl"
-
-          codesign --force --deep --sign - "$STAGE/mac_x64/libonnxruntime.1.22.0.dylib"
-          codesign --force --deep --sign - "$STAGE/mac_x64/libpiper.dylib"
-          codesign --force --deep --sign - "$STAGE/mac_x64/xp_wellys_atc.xpl"
-
-          # espeak-ng-data is plain phoneme/dictionary data — identical on every
-          # platform, so the single combined bundle carries one copy (from here).
-          rsync -a --delete \
-            build/espeak_ng-install/share/espeak-ng-data/ \
-            "$STAGE/Resources/espeak-ng-data/"
+          cp build/xp_wellys_atc.xpl "$STAGE/mac_x64/"
+          # Cloud-only: no bundled dylibs to resolve, so just ad-hoc codesign
+          # the self-contained .xpl (Gatekeeper still wants a signature).
+          codesign --force --sign - "$STAGE/mac_x64/xp_wellys_atc.xpl"
 
       - name: Upload macOS slice
         if: startsWith(github.ref, 'refs/tags/v')
@@ -125,24 +124,19 @@ jobs:
           path: dist/macos
           retention-days: 1
 
-  # ── Linux slice (Ubuntu 24.04) ──────────────────────────────────────────
-  # Builds the lin_x64 .xpl and (on tag) stages just the lin_x64 slice. The
-  # package job merges this with the macOS slice. No release is published here.
+  # ── Linux slice (Ubuntu 24.04, cloud-only) ──────────────────────────────
+  # Builds the lin_x64 cloud-only .xpl and (on tag) stages it. The package
+  # job merges this with the macOS + Windows slices.
   build-linux:
     needs: test
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
-        with:
-          submodules: recursive
-
-      - name: Rewrite SSH submodule URLs to HTTPS
-        run: git config --global url."https://github.com/".insteadOf "git@github.com:"
 
       - name: Install Linux build dependencies
         # libgl1-mesa-dev provides <GL/gl.h> for ImGui's GL2 backend and
-        # src/ui/atc_ui.cpp. The test job doesn't compile the UI, so it
-        # doesn't need it.
+        # src/ui/atc_ui.cpp. libpulse-dev backs the mic-capture TU; libssl-dev
+        # backs model_manifest's SHA256 (both compiled in cloud mode too).
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -150,24 +144,22 @@ jobs:
             libcurl4-openssl-dev libssl-dev libpulse-dev \
             libgl1-mesa-dev
 
-      - name: Setup dependencies
-        run: make setup
+      - name: Setup dependencies (cloud-only — no submodules)
+        run: make setup-cloud
 
       - name: Set up ccache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
-          key: ${{ runner.os }}-${{ github.job }}-${{ startsWith(github.ref, 'refs/tags/v') && 'release' || 'debug' }}
+          key: ${{ runner.os }}-${{ github.job }}
           max-size: 1500M
           variant: ccache
 
-      - name: Build (Linux)
-        # `make build` on Linux configures a single tree (build/) with
-        # XPWELLYS_USE_LOCAL_INFERENCE=ON and produces build/xp_wellys_atc.xpl
-        # for the lin_x64 plugin directory. Tag pushes flip -DRELEASE=ON.
+      - name: Build (Linux, cloud-only)
         run: |
-          RELEASE_FLAG=""
-          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then RELEASE_FLAG="-DRELEASE=ON"; fi
-          make build RELEASE_FLAG="$RELEASE_FLAG"
+          cmake -B build -DCMAKE_BUILD_TYPE=Release \
+            -DXPWELLYS_USE_LOCAL_INFERENCE=OFF \
+            -DBUILD_TESTS=OFF -Wno-dev
+          cmake --build build --parallel --target xp_wellys_atc
           ccache --show-stats
 
       - name: Stage Linux slice
@@ -176,19 +168,9 @@ jobs:
           set -euo pipefail
           STAGE=dist/linux
           mkdir -p "$STAGE/lin_x64"
-
-          # The plugin links libpiper.so / libonnxruntime.so via $ORIGIN rpath
-          # (set at build time), so no install_name_tool / codesign step is
-          # needed on Linux. Guards mirror `make install-linux`.
+          # Cloud-only: the .xpl is self-contained (libcurl is a system lib on
+          # the target), so no bundled .so files.
           cp build/xp_wellys_atc.xpl "$STAGE/lin_x64/"
-          [ -f build/libpiper.so ] && cp build/libpiper.so "$STAGE/lin_x64/" || true
-          if [ -f build/libonnxruntime.so.1.22.0 ]; then
-            cp build/libonnxruntime.so.1.22.0 "$STAGE/lin_x64/"
-            cp build/libonnxruntime.so        "$STAGE/lin_x64/"
-            ln -sf libonnxruntime.so.1.22.0   "$STAGE/lin_x64/libonnxruntime.so.1"
-          fi
-          [ -f build/libonnxruntime_providers_shared.so ] && \
-            cp build/libonnxruntime_providers_shared.so "$STAGE/lin_x64/" || true
 
       - name: Upload Linux slice
         if: startsWith(github.ref, 'refs/tags/v')
@@ -199,19 +181,16 @@ jobs:
           retention-days: 1
 
   # ── Windows slice (windows-latest, cloud-only) ──────────────────────────
-  # Native MSVC build (no cross-compile). Produces win_x64/xp_wellys_atc.xpl
-  # with XPWELLYS_USE_LOCAL_INFERENCE=OFF — functionally the Intel cloud-only
-  # slice: OpenAI + Mistral backends, WASAPI mic capture, Credential Manager
-  # secret store. libcurl is linked statically (vcpkg x64-windows-static,
-  # Schannel TLS) so the artefact ships zero extra DLLs. On tag pushes it
-  # stages just the win_x64 slice; the package job merges it in.
+  # Native MSVC build (no cross-compile). Produces win_x64/xp_wellys_atc.xpl:
+  # OpenAI + Mistral backends, WASAPI mic capture, Credential Manager secret
+  # store. libcurl is linked statically (vcpkg x64-windows-static, Schannel
+  # TLS) so the artefact ships zero extra DLLs. Uploads a ready-to-drop plugin
+  # folder (xp_wellys_atc-win) on every run for `make win-artifact`.
   build-windows:
     needs: test
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
-        # No submodules: the cloud-only slice compiles none of the
-        # whisper/llama/Piper trees, so we skip the multi-GB fetch.
 
       - name: Set up MSVC developer environment
         uses: ilammy/msvc-dev-cmd@v1
@@ -254,8 +233,6 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $releaseFlag = @()
-          if ($env:GITHUB_REF -like "refs/tags/v*") { $releaseFlag = @("-DRELEASE=ON") }
           cmake -B build-win -G Ninja `
             -DCMAKE_BUILD_TYPE=Release `
             -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
@@ -263,7 +240,6 @@ jobs:
             -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded `
             -DXPWELLYS_USE_LOCAL_INFERENCE=OFF `
             -DBUILD_TESTS=OFF `
-            @releaseFlag `
             -Wno-dev
           # Build just the plugin — atc_repl / atc_ifr_repl are dev tools not
           # shipped on Windows, and skipping them keeps the CI focused on the
@@ -308,7 +284,7 @@ jobs:
           retention-days: 7
 
   # ── Package + release (one combined bundle) ─────────────────────────────
-  # Merges all platform slices with the shared data/ + docs/ + Resources/
+  # Merges all three cloud-only platform slices with the shared data/ + docs/
   # into a single X-Plane plugin folder and publishes one release ZIP.
   # Runs on tag pushes only.
   package:
@@ -344,23 +320,19 @@ jobs:
           set -euo pipefail
           STAGE=dist/xp_wellys_atc
           mkdir -p "$STAGE/data/vrps"
-          mkdir -p "$STAGE/Resources/models"
 
           # Platform slices (X-Plane auto-loads the matching one at runtime).
+          # Cloud-only: each is a single self-contained .xpl, no dylibs/.so.
           cp -R slice-macos/mac_x64   "$STAGE/"
           cp -R slice-linux/lin_x64   "$STAGE/"
           cp -R slice-windows/win_x64 "$STAGE/"
-
-          # Shared, platform-independent espeak-ng-data (from the macOS slice).
-          cp -R slice-macos/Resources/espeak-ng-data "$STAGE/Resources/"
 
           # Shared data + docs straight from the repo.
           cp data/atc_prompt_templates.json "$STAGE/data/"
           cp data/models_catalog.json       "$STAGE/data/"
           cp data/settings.json             "$STAGE/data/"
           # Whole atc_profiles tree so the EU vfr/ + ifr/ split (and any future
-          # profile files) ship automatically. The experimental_ifr scenarios
-          # live under testscripts/, not here, so nothing test-only is shipped.
+          # profile files) ship automatically.
           cp -R data/atc_profiles           "$STAGE/data/"
           cp data/vrps/airport_vrps.json    "$STAGE/data/vrps/"
 

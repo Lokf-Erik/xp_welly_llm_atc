@@ -257,9 +257,12 @@ if(WIN32)
     target_compile_definitions(xp_atc_engine PRIVATE
         NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS _USE_MATH_DEFINES)
     target_compile_options(xp_atc_engine PRIVATE /W3 /utf-8)
-    # Bcrypt (CNG) backs model_manifest.cpp's SHA256 on Windows. PUBLIC so
-    # every consumer of the engine OBJECT lib inherits the link.
-    target_link_libraries(xp_atc_engine PUBLIC bcrypt)
+    # Bcrypt (CNG) backs model_manifest.cpp's SHA256 on Windows. CURL is
+    # needed so manager.cpp finds <curl/curl.h> at compile time — on
+    # mac/Linux curl sits in a system include path, but the vcpkg static
+    # build puts it under the imported target's include dirs only. PUBLIC
+    # so every consumer of the engine OBJECT lib inherits both.
+    target_link_libraries(xp_atc_engine PUBLIC bcrypt CURL::libcurl)
 endif()
 if(XP_WELLYS_ATC_SANITIZE)
     target_compile_options(xp_atc_engine PRIVATE
