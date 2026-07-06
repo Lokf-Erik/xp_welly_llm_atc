@@ -41,7 +41,7 @@ LINT_EXCLUDE := src/audio/audio_input_coreaudio.cpp
 endif
 LINT_SOURCES := $(filter-out $(LINT_EXCLUDE),$(wildcard src/main.cpp src/*/*.cpp))
 
-.PHONY: all help setup setup-cloud build install install-mac install-linux install-data package clean distclean format lint sanitize release release-build cleanup-tags cleanup-branches cleanup-runs repl run-repl ifr-repl run-ifr-repl test test-unit test-scenarios ci-remote win-artifact
+.PHONY: all help setup setup-cloud build install install-mac install-linux install-data package clean distclean format lint sanitize release release-build cleanup-tags cleanup-branches cleanup-runs cleanup-cache repl run-repl ifr-repl run-ifr-repl test test-unit test-scenarios ci-remote win-artifact
 
 .DEFAULT_GOAL := help
 
@@ -72,6 +72,7 @@ help:
 	@echo "  make cleanup-tags      Prune local tags no longer on origin"
 	@echo "  make cleanup-branches  Prune local branches whose remote is gone"
 	@echo "  make cleanup-runs      Delete all GitHub Actions runs except the newest per workflow"
+	@echo "  make cleanup-cache     Delete all GitHub Actions caches (freed on next CI run)"
 	@echo "  make ci-remote         Trigger the GitHub CI (mac + Windows slice) on the current branch via gh (builds the PUSHED state)"
 	@echo "  make win-artifact      Download the newest Windows CI artifact (xp_wellys_atc-win) via gh -> dist-win/"
 	@echo "  make clean             Remove build/, build-lint/ and build-sanitize/"
@@ -593,6 +594,20 @@ cleanup-runs:
 	        | xargs -I {} gh run delete {}; \
 	done
 	@echo "Cleanup complete."
+
+# Delete GitHub Actions caches. ccache entries accumulate per branch/key
+# (and old keys go stale after a CI change like the cloud-only switch);
+# GitHub's 10 GB LRU evicts them eventually, but this frees the quota now.
+# All caches are rebuilt automatically on the next run.
+cleanup-cache:
+	@command -v gh >/dev/null 2>&1 || { \
+	    echo "gh not found. Install with: brew install gh"; exit 1; }
+	@echo "Current GitHub Actions caches:"
+	@gh cache list --limit 100 2>/dev/null || true
+	@echo ""
+	@echo "Deleting all caches (rebuilt on the next CI run)..."
+	@gh cache delete --all 2>/dev/null || echo "No caches to delete."
+	@echo "Cache cleanup complete."
 
 # ── Remote CI (Windows build via GitHub Actions) ──────────────────────────────
 # The Windows slice can only be compiled by CI (no local MSVC toolchain on a
