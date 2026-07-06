@@ -2670,7 +2670,7 @@ static void draw_ifr_tab() {
   }
 
   // Status line
-  if (st == simbrief_client::FetchStatus::ERROR) {
+  if (st == simbrief_client::FetchStatus::FAILED) {
     ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Error: %s",
                        simbrief_client::last_error().c_str());
   } else if (st == simbrief_client::FetchStatus::SUCCESS ||

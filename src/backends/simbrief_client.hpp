@@ -15,14 +15,16 @@
 // detached std::thread — never blocks the X-Plane main thread.
 namespace simbrief_client {
 
-enum class FetchStatus { IDLE, FETCHING, SUCCESS, ERROR };
+// NB: FAILED, not ERROR — ERROR is a <windows.h> macro (#define ERROR 0)
+// that mangles a scoped enumerator on the MSVC build.
+enum class FetchStatus { IDLE, FETCHING, SUCCESS, FAILED };
 
 // Start an async OFP fetch for the given pilot ID (non-zero).
 // No-op if a fetch is already in progress.
 void fetch_async(int pilot_id);
 
 FetchStatus status();
-std::string last_error(); // non-empty only when status() == ERROR
+std::string last_error(); // non-empty only when status() == FAILED
 
 } // namespace simbrief_client
 

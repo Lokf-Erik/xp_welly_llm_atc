@@ -14,6 +14,7 @@
 
 #include <atomic>
 #include <cstdio>
+#include <sstream>
 #include <string>
 #include <thread>
 
@@ -45,7 +46,7 @@ void do_fetch(int pilot_id) {
   CURL *curl = curl_easy_init();
   if (!curl) {
     g_last_error = "curl_easy_init failed";
-    g_status.store(FetchStatus::ERROR);
+    g_status.store(FetchStatus::FAILED);
     return;
   }
 
@@ -62,7 +63,7 @@ void do_fetch(int pilot_id) {
 
   if (res != CURLE_OK) {
     g_last_error = curl_easy_strerror(res);
-    g_status.store(FetchStatus::ERROR);
+    g_status.store(FetchStatus::FAILED);
     return;
   }
 
@@ -75,7 +76,7 @@ void do_fetch(int pilot_id) {
         j.value("fetch", json::object()).value("status", std::string{});
     if (api_status != "Success") {
       g_last_error = api_status.empty() ? "unexpected response" : api_status;
-      g_status.store(FetchStatus::ERROR);
+      g_status.store(FetchStatus::FAILED);
       return;
     }
 
@@ -276,7 +277,7 @@ void do_fetch(int pilot_id) {
 
   } catch (const std::exception &e) {
     g_last_error = std::string("parse error: ") + e.what();
-    g_status.store(FetchStatus::ERROR);
+    g_status.store(FetchStatus::FAILED);
   }
 }
 
