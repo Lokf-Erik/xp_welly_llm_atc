@@ -24,6 +24,7 @@
 #include "atc/flight_phase.hpp"
 #include "atc/flows/state_storage.hpp"
 #include "core/logging.hpp"
+#include "data/airspace_db.hpp"
 #include "data/airport_vrps.hpp"
 #include "data/cifp_reader.hpp"
 #include "persistence/settings.hpp"
@@ -223,6 +224,16 @@ std::string effective_state_for_template(ATCState state,
     return "IFR/GROUND_NO_CLEARANCE";
   }
 
+  // IDLE + IFR still active (squawk assigned) + pilot calling Approach or Centre
+  // → readback timeout reset us to IDLE mid-flight; re-enter IFR cruise flow so
+  //   the system gives a radar-contact response and re-issues the descent sequence
+  //   instead of falling through to the VFR XC/APPROACH_CONTACT inbound handler.
+  if (state == ATCState::IDLE && has_ifr_squawk &&
+      (msg.intent == PI::INITIAL_CALL_APPROACH ||
+       msg.intent == PI::INITIAL_CALL_CENTER)) {
+    return "IFR/ENROUTE_CRUISE";
+  }
+
   // IFR_APPROACH_CONTACT + INITIAL_CALL_APPROACH but pilot NOT on Approach freq
   // → pilot is reading back Centre's "contact Approach on X.XXX" while still on
   //    Centre frequency, not actually checking in with Approach. Treat as silent
@@ -263,7 +274,8 @@ std::string effective_state_for_template(ATCState state,
 // ── build_vars: template variable map ───────────────────────────────
 
 std::map<std::string, std::string> build_vars(const PilotMessage &msg,
-                                              const XPlaneContext &ctx) {
+                                              const XPlaneContext &ctx,
+                                              bool apply_side_effects) {
   static const char *letter_names[] = {
       "Alpha",  "Bravo",   "Charlie", "Delta",  "Echo",   "Foxtrot", "Golf",
       "Hotel",  "India",   "Juliet",  "Kilo",   "Lima",   "Mike",    "November",
@@ -344,6 +356,9 @@ std::map<std::string, std::string> build_vars(const PilotMessage &msg,
       {"entry_vrp", msg.vrp_name},
       {"position_remark", position_remark},
       {"tower_handoff_phrase", tower_handoff_phrase},
+      {"nearest_taxiway",
+       xplane_context::nearest_taxiway_phrase(ctx.nearest_airport_id,
+                                              ctx.latitude, ctx.longitude)},
       // Traffic-advisory placeholders. Empty for normal pilot-driven
       // intents — populated by render_traffic_advisory() and
       // traffic_dialog before template fill(). {side} is Phase-3's
@@ -437,7 +452,19 @@ std::map<std::string, std::string> build_vars(const PilotMessage &msg,
       // LFLP: RW04 + LSE/LTP/ROMAM (westbound via SOCOF) → FL090 (Geneva TMA cap);
       //        all other LFLP departures → FL110.
       // Default: midpoint between initial SID alt and SID binding minimum, rounded to 10 FL.
+      // Always capped at the filed cruise FL — never assign above what the pilot filed.
       {"ifr_departure_climb", [&]() -> std::string {
+        // Cap helper: if filed cruise is lower than the computed FL, use filed FL.
+        auto fl_str = [&](int fl) -> std::string {
+          if (ctx.ifr_cruise_alt_ft > 0) {
+            const int cruise_fl = ctx.ifr_cruise_alt_ft / 100;
+            if (cruise_fl > 0 && fl > cruise_fl)
+              fl = cruise_fl;
+          }
+          char buf[16];
+          std::snprintf(buf, sizeof(buf), "FL%d", fl);
+          return buf;
+        };
         if (ctx.nearest_airport_id == "LFLP") {
           if (ctx.active_runway == "04") {
             const std::string &fix = ctx.ifr_sid_last_fix.empty()
@@ -445,9 +472,9 @@ std::map<std::string, std::string> build_vars(const PilotMessage &msg,
                                          : ctx.ifr_sid_last_fix;
             static const char *kWestFixes[] = {"LSE", "LTP", "ROMAM", nullptr};
             for (int i = 0; kWestFixes[i]; ++i)
-              if (fix == kWestFixes[i]) return "FL090";
+              if (fix == kWestFixes[i]) return fl_str(90);
           }
-          return "FL110"; // LFLP default — all other runways/SIDs
+          return fl_str(110); // LFLP default — all other runways/SIDs
         }
         auto cifp = cifp_reader::initial_altitude(
             ctx.cifp_dir, ctx.nearest_airport_id, ctx.active_runway);
@@ -458,10 +485,7 @@ std::map<std::string, std::string> build_vars(const PilotMessage &msg,
                           ? ctx.ifr_sid_min_alt_ft
                           : init_ft + 6000;
         int mid_ft = (init_ft + sid_min) / 2;
-        int fl = ((mid_ft + 999) / 1000) * 10;
-        char buf[16];
-        std::snprintf(buf, sizeof(buf), "FL%d", fl);
-        return buf;
+        return fl_str(((mid_ft + 999) / 1000) * 10);
       }()},
       // {ifr_departure_constraint}: optional departure constraint phrase inserted
       // after {ifr_initial_altitude} in the clearance template.
@@ -591,8 +615,12 @@ std::map<std::string, std::string> build_vars(const PilotMessage &msg,
         // Cache the departure label so poll_departure_handoff() can activate
         // it later — even if the nearest airport changes en-route and loses
         // its apt.dat frequency entry by then.
-        engine::set_pending_departure_label(facility_name);
-        engine::set_pending_handoff_freq(freq);
+        // Guard: only cache when generating a real ATC response, not when
+        // build_vars is called from the UI hints panel (every frame).
+        if (apply_side_effects) {
+          engine::set_pending_departure_label(facility_name);
+          engine::set_pending_handoff_freq(freq);
+        }
         char buf[128];
         std::snprintf(buf, sizeof(buf), ", passing %dft QNH %d, contact %s on %.3f",
                       alt, ctx.qnh_hpa, facility_name.c_str(), freq);
@@ -882,9 +910,17 @@ bool check_handoff_reissue(const PilotMessage &msg, const XPlaneContext &ctx,
   }
 
   // IFR handoff-pending states: pilot called back on old (non-Centre) frequency.
+  // Covers en-route (FREQ_HANDOFF / ENROUTE_CRUISE) and all approach phases —
+  // sector transfers within Approach (Melun -> Paris), Approach -> Tower/AFIS
+  // at FAF, and Tower -> Ground after landing all set s_pending_handoff_freq_mhz.
   const std::string state_str = atc_state_machine::state_name(cur);
-  bool ifr_handoff = (state_str == "IFR/FREQ_HANDOFF" ||
-                      state_str == "IFR/ENROUTE_CRUISE");
+  bool ifr_handoff = (state_str == "IFR/FREQ_HANDOFF"        ||
+                      state_str == "IFR/ENROUTE_CRUISE"      ||
+                      state_str == "IFR/DESCENT"             ||
+                      state_str == "IFR/APPROACH_CONTACT"    ||
+                      state_str == "IFR/APPROACH_DESCENT"    ||
+                      state_str == "IFR/APPROACH_TOWER"      ||
+                      state_str == "IFR/LANDING_CLEARED");
   if (ifr_handoff &&
       ctx.frequency_type != FT::UNKNOWN &&
       ctx.frequency_type != FT::CTAF   &&
@@ -898,12 +934,30 @@ bool check_handoff_reissue(const PilotMessage &msg, const XPlaneContext &ctx,
       return false;
 
     float pending_freq = engine::pending_handoff_freq();
+    float pilot_freq = (ctx.active_com == 1) ? ctx.com1_freq_mhz
+                                             : ctx.com2_freq_mhz;
     if (pending_freq >= 100.0f) {
       // Pilot already tuned to the handoff frequency — let the check-in through.
-      float pilot_freq = (ctx.active_com == 1) ? ctx.com1_freq_mhz
-                                               : ctx.com2_freq_mhz;
       if (std::fabs(pilot_freq - pending_freq) < 0.005f)
         return false;
+    }
+    // Pilot is on a valid TRACON/CTR sector frequency from the airspace DB.
+    // pending_freq may be stale when apt.dat and atc.dat disagree (e.g. LFLY
+    // apt.dat has 120.230 as APP, but 120.230 is actually LFLL TRACON in
+    // atc.dat). Allowing the check-in avoids looping "I say again" on the
+    // correct frequency.
+    using CR = airspace_db::ControllerRole;
+    for (const auto *c : ctx.enclosing_airspaces) {
+      if (c->role != CR::TRACON && c->role != CR::CTR)
+        continue;
+      for (uint32_t f : c->freqs_khz) {
+        if (std::fabs(pilot_freq - static_cast<float>(f) / 1000.0f) < 0.005f) {
+          logging::info(
+              "Handoff reissue suppressed: pilot %.3f matches sector %s",
+              pilot_freq, c->name.c_str());
+          return false;
+        }
+      }
     }
     const std::string &ctrl = engine::current_controller_label().empty()
                                   ? engine::pending_departure_label()
@@ -954,13 +1008,18 @@ bool check_freq_precondition(const PilotMessage &msg, const XPlaneContext &ctx,
   }
   if (ctx.tower_only && ctx.frequency_type == FT::TOWER)
     return false;
-  // IFR airborne states: pilot is on a Centre/en-route frequency that will
-  // never appear in any local airport DB (always UNKNOWN). Skip the guard.
+  // IFR airborne states: pilot is on a Centre/en-route/Approach/Tower/AFIS
+  // frequency that may not appear in the destination's local airport DB, or
+  // may be classified as ATIS/UNKNOWN (AFIS destinations, e.g. LFQA Info on
+  // 134.925). Skip the guard — the pilot has already been handed to this
+  // controller by the plugin, so any READBACK/ack on this freq is legitimate
+  // regardless of the freq type classification.
   {
     const std::string s = atc_state_machine::state_name(internal::get_state_ref());
     if (s == "IFR/RADAR_CONTACT"    || s == "IFR/ENROUTE_CRUISE" ||
         s == "IFR/FREQ_HANDOFF"     || s == "IFR/APPROACH_CONTACT" ||
-        s == "IFR/APPROACH_DESCENT")
+        s == "IFR/APPROACH_DESCENT" || s == "IFR/APPROACH_TOWER"  ||
+        s == "IFR/LANDING_CLEARED")
       return false;
   }
   std::string intent_key = intent_parser::intent_template_key(msg.intent);

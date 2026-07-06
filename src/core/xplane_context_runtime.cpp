@@ -53,6 +53,7 @@ static XPLMDataRef dr_com1_freq = nullptr;
 static XPLMDataRef dr_com2_freq = nullptr;
 static XPLMDataRef dr_active_com = nullptr;
 static XPLMDataRef dr_aircraft_icao = nullptr;
+static XPLMDataRef dr_aircraft_tailnum = nullptr;
 static XPLMDataRef dr_ifr_destination = nullptr;
 static XPLMDataRef dr_avionics_on = nullptr;
 static XPLMDataRef dr_com1_power = nullptr;
@@ -126,6 +127,19 @@ static std::unordered_map<std::string,
     holding_cache_;
 // Transition altitude in feet per airport — from apt.dat 1302 transition_alt.
 static std::unordered_map<std::string, int> transition_alt_cache_;
+// Taxiway edges per airport — for nearest-taxiway lookup at vacate time.
+// Stored as full line segments (both endpoints) so we can compute the exact
+// distance from the aircraft's position to each edge and pick the taxiway
+// the aircraft is physically ON, not just the closest midpoint (which can
+// point at a parallel taxiway on the far side of the runway).
+struct TaxiwayMidpoint {
+  double lat = 0.0, lon = 0.0;                 // midpoint (kept for legacy uses)
+  double from_lat = 0.0, from_lon = 0.0;       // edge endpoints
+  double to_lat = 0.0, to_lon = 0.0;
+  std::string name;
+};
+static std::unordered_map<std::string, std::vector<TaxiwayMidpoint>>
+    taxiway_midpoint_cache_;
 static std::atomic<bool> towered_cache_ready_{false};
 
 // Airport picker: when set, overrides nearest-airport selection logic.
@@ -162,6 +176,17 @@ static float initial_bearing(double lat1, double lon1, double lat2,
   return static_cast<float>(std::fmod(bearing + 360.0, 360.0));
 }
 
+static bool compute_tower_only(bool is_towered,
+                               const AirportFrequencies &freqs) {
+  if (!is_towered)
+    return false;
+  if (!freqs.has_ground())
+    return true;
+  float gf = freqs.first_mhz(FrequencyType::GROUND);
+  float tf = freqs.first_mhz(FrequencyType::TOWER);
+  return (gf >= 100.0f && tf >= 100.0f && std::fabs(gf - tf) < 0.001f);
+}
+
 // Forward decl (defined further down).
 static std::string select_active_runway(const std::vector<RunwayInfo> &runways,
                                         float wind_dir, float wind_speed,
@@ -192,7 +217,7 @@ static void populate_ctx_from_cache(const std::string &icao,
   if (freq_it != freq_cache_.end()) {
     ctx.airport_freqs = freq_it->second;
     ctx.is_towered_airport = ctx.airport_freqs.has(FrequencyType::TOWER);
-    ctx.tower_only = ctx.is_towered_airport && !ctx.airport_freqs.has_ground();
+    ctx.tower_only = compute_tower_only(ctx.is_towered_airport, ctx.airport_freqs);
     ctx.atis_freq_mhz = ctx.airport_freqs.first_mhz(FrequencyType::ATIS);
   } else {
     ctx.airport_freqs = {};
@@ -277,6 +302,83 @@ static std::string find_freq_match(const std::string &skip_id,
 // Surface codes 1 (asphalt) and 2 (concrete) are paved
 static bool is_paved(int surface_code) {
   return surface_code == 1 || surface_code == 2;
+}
+
+// An airport is "tower only" when it has a Tower frequency but no SEPARATE
+// Ground frequency — including the case where some apt.dat entries list the
+// same frequency under both Tower and Ground slots (single-frequency AFIS).
+static const char *kPhoneticLetters[26] = {
+    "Alpha",   "Bravo",   "Charlie", "Delta",  "Echo",    "Foxtrot",
+    "Golf",    "Hotel",   "India",   "Juliet",  "Kilo",    "Lima",
+    "Mike",    "November","Oscar",   "Papa",    "Quebec",  "Romeo",
+    "Sierra",  "Tango",   "Uniform", "Victor",  "Whiskey", "X-ray",
+    "Yankee",  "Zulu",
+};
+
+// Return "via Alpha" / "via Bravo" for the taxiway edge the aircraft is
+// physically on (or standing next to), or "to the apron" if no edge is
+// close enough. Uses point-to-segment distance from the aircraft to each
+// taxiway edge — the taxiway the aircraft is ON has distance ≈ 0. Using
+// the midpoint alone was too crude: a parallel taxiway across the runway
+// could have a geometrically-closer midpoint than the taxiway the aircraft
+// is actually rolling on.
+std::string nearest_taxiway_phrase(const std::string &icao,
+                                   double lat, double lon) {
+  if (!towered_cache_ready_)
+    return "to the apron";
+  auto it = taxiway_midpoint_cache_.find(icao);
+  if (it == taxiway_midpoint_cache_.end() || it->second.empty())
+    return "to the apron";
+
+  // Local-tangent projection for point-to-segment math. Good enough at
+  // taxiway scales (< 100 m error over a few NM).
+  const double lat_rad   = lat * M_PI / 180.0;
+  const double m_per_lat = 111132.92;
+  const double m_per_lon = 111412.84 * std::cos(lat_rad);
+  auto to_xy = [&](double la, double lo, double &x, double &y) {
+    x = (lo - lon) * m_per_lon;
+    y = (la - lat) * m_per_lat;
+  };
+
+  double best_dist_m = 1e9;
+  const TaxiwayMidpoint *best = nullptr;
+  for (const auto &mp : it->second) {
+    // Handle degenerate edges (single-point) by falling back to midpoint.
+    if (mp.from_lat == 0.0 && mp.from_lon == 0.0 &&
+        mp.to_lat == 0.0 && mp.to_lon == 0.0) {
+      double d = haversine_distance(lat, lon, mp.lat, mp.lon);
+      if (d < best_dist_m) { best_dist_m = d; best = &mp; }
+      continue;
+    }
+    double ax, ay, bx, by;
+    to_xy(mp.from_lat, mp.from_lon, ax, ay);
+    to_xy(mp.to_lat,   mp.to_lon,   bx, by);
+    // Aircraft is at (0,0) in this projection.
+    const double dx = bx - ax, dy = by - ay;
+    const double len2 = dx*dx + dy*dy;
+    double t = 0.0;
+    if (len2 > 1e-6)
+      t = std::max(0.0, std::min(1.0, (-ax * dx + -ay * dy) / len2));
+    const double px = ax + t * dx;
+    const double py = ay + t * dy;
+    const double d_m = std::sqrt(px*px + py*py);
+    if (d_m < best_dist_m) {
+      best_dist_m = d_m;
+      best = &mp;
+    }
+  }
+  if (!best)
+    return "to the apron";
+  // If the nearest edge is > 40 m away the aircraft is likely not on any
+  // named taxiway (crossed onto grass / on the runway itself).
+  if (best_dist_m > 40.0)
+    return "to the apron";
+  const std::string &name = best->name;
+  // Single uppercase letter → NATO phonetic.
+  if (name.size() == 1 && name[0] >= 'A' && name[0] <= 'Z')
+    return std::string("via ") + kPhoneticLetters[name[0] - 'A'];
+  // Multi-character name (e.g. "T1", "GA") — use as-is.
+  return "via " + name;
 }
 
 static std::string select_active_runway(const std::vector<RunwayInfo> &runways,
@@ -451,6 +553,7 @@ struct AptParseData {
   std::unordered_map<std::string, std::unordered_map<std::string, std::string>>
       holding;
   std::unordered_map<std::string, int> transition_alts;
+  std::unordered_map<std::string, std::vector<TaxiwayMidpoint>> taxiways;
 };
 
 static void parse_apt_file(const std::string &path, AptParseData &d) {
@@ -486,6 +589,8 @@ static void parse_apt_file(const std::string &path, AptParseData &d) {
   bool last_was_1202 = false;
   ActiveZoneInfo last_1202;
   std::unordered_map<std::string, std::vector<ActiveZoneInfo>> cur_active_zones;
+  // All named non-runway 1202 edges for the current airport block.
+  std::vector<ActiveZoneInfo> cur_all_twy_edges;
 
   auto finalize_holding_points = [&]() {
     if (current_icao.empty() || cur_active_zones.empty()) {
@@ -552,8 +657,28 @@ static void parse_apt_file(const std::string &path, AptParseData &d) {
       if (!best_taxiway.empty())
         holding[current_icao][rwy_num] = best_taxiway;
     }
+    // Build taxiway midpoint list for nearest-taxiway-on-vacate lookup.
+    if (!current_icao.empty() && !cur_all_twy_edges.empty()) {
+      auto &twy_vec = d.taxiways[current_icao];
+      for (const auto &e : cur_all_twy_edges) {
+        auto fi = cur_nodes.find(e.from);
+        auto ti = cur_nodes.find(e.to);
+        if (fi != cur_nodes.end() && ti != cur_nodes.end()) {
+          TaxiwayMidpoint mp;
+          mp.lat  = (fi->second.lat + ti->second.lat) * 0.5;
+          mp.lon  = (fi->second.lon + ti->second.lon) * 0.5;
+          mp.from_lat = fi->second.lat;
+          mp.from_lon = fi->second.lon;
+          mp.to_lat   = ti->second.lat;
+          mp.to_lon   = ti->second.lon;
+          mp.name = e.taxiway;
+          twy_vec.push_back(mp);
+        }
+      }
+    }
     cur_nodes.clear();
     cur_active_zones.clear();
+    cur_all_twy_edges.clear();
     last_was_1202 = false;
   };
 
@@ -749,6 +874,14 @@ static void parse_apt_file(const std::string &path, AptParseData &d) {
                          static_cast<uint32_t>(std::stoul(t[1])),
                          static_cast<uint32_t>(std::stoul(t[2]))};
             last_was_1202 = true;
+            // Accumulate named taxiway edges (skip runway crossings and unnamed).
+            const std::string &lbl = last_1202.taxiway;
+            bool is_twy_name = !lbl.empty() &&
+                               lbl.find('/') == std::string::npos &&
+                               !std::all_of(lbl.begin(), lbl.end(),
+                                            [](char c) { return std::isdigit(c); });
+            if (is_twy_name)
+              cur_all_twy_edges.push_back(last_1202);
           } catch (...) { // NOLINT(bugprone-empty-catch)
           }
         }
@@ -846,6 +979,8 @@ static void build_towered_cache() {
     data.holding[k] = std::move(v);
   for (auto &[k, v] : custom.transition_alts)
     data.transition_alts[k] = v;
+  for (auto &[k, v] : custom.taxiways)
+    data.taxiways[k] = std::move(v);
 
   if (!custom.freqs.empty() || !custom.runways.empty()) {
     char log[256];
@@ -865,6 +1000,7 @@ static void build_towered_cache() {
   elevation_cache_ = std::move(data.elevations);
   holding_cache_ = std::move(data.holding);
   transition_alt_cache_ = std::move(data.transition_alts);
+  taxiway_midpoint_cache_ = std::move(data.taxiways);
   towered_cache_ready_ = true;
 
   // Count towered airports for log
@@ -908,6 +1044,7 @@ void init() {
   dr_active_com =
       XPLMFindDataRef("sim/cockpit2/radios/actuators/audio_com_selection");
   dr_aircraft_icao = XPLMFindDataRef("sim/aircraft/view/acf_ICAO");
+  dr_aircraft_tailnum = XPLMFindDataRef("sim/aircraft/view/acf_tailnum");
   dr_ifr_destination =
       XPLMFindDataRef("sim/flightmodel/misc/destination_airport_id");
   dr_avionics_on = XPLMFindDataRef("sim/cockpit/electrical/avionics_on");
@@ -1009,6 +1146,11 @@ void update() {
     XPLMGetDatab(dr_aircraft_icao, buf, 0, sizeof(buf) - 1);
     ctx.aircraft_icao = buf;
   }
+  if (dr_aircraft_tailnum) {
+    char buf[64] = {};
+    XPLMGetDatab(dr_aircraft_tailnum, buf, 0, sizeof(buf) - 1);
+    ctx.aircraft_tail_number = buf;
+  }
   // Destination ICAO: SimBrief OFP takes priority when loaded.
   // Fall back to X-Plane FMS (destination entry) or the aircraft DataRef only
   // when no SimBrief OFP is present — this avoids a per-frame log spam where
@@ -1018,10 +1160,18 @@ void update() {
     auto ofp = simbrief_ofp::get();
     ctx.ifr_simbrief_valid = ofp.valid;
     if (ofp.valid) {
-      // Use the airport name when available (e.g. "Nice") so the clearance
-      // says "cleared to Nice" instead of "cleared to LFMN".
-      ctx.ifr_destination = ofp.destination_name.empty() ? ofp.destination_icao
-                                                         : ofp.destination_name;
+      // Prefer the apt.dat name (e.g. "Reims-Prunay") over SimBrief's
+      // potentially incomplete field (e.g. "PRUNAY"). Fallback chain:
+      // apt.dat name -> SimBrief name -> ICAO code.
+      {
+        const std::string apt_name = airport_name_for(ofp.destination_icao);
+        if (!apt_name.empty())
+          ctx.ifr_destination = apt_name;
+        else if (!ofp.destination_name.empty())
+          ctx.ifr_destination = ofp.destination_name;
+        else
+          ctx.ifr_destination = ofp.destination_icao;
+      }
       ctx.ifr_sid = ofp.sid_name;
       ctx.ifr_fpl_first_fix = ofp.fpl_first_fix;
       ctx.ifr_cruise_alt_ft = ofp.cruise_alt_ft;
@@ -1099,7 +1249,8 @@ void update() {
       ctx.ifr_cifp_sid = cifp_reader::sid_name_for_runway(
           ctx.cifp_dir, ctx.nearest_airport_id, ctx.active_runway);
     auto bind = cifp_reader::sid_binding_altitude(
-        ctx.cifp_dir, ctx.nearest_airport_id, ctx.active_runway);
+        ctx.cifp_dir, ctx.nearest_airport_id, ctx.active_runway,
+        ctx.ifr_cifp_sid);
     ctx.ifr_sid_min_alt_ft = bind.alt.feet;
     ctx.ifr_sid_min_is_fl = bind.alt.is_fl;
     ctx.ifr_sid_min_waypoint = bind.waypoint;
@@ -1728,6 +1879,13 @@ std::string airport_name_for(const std::string &icao) {
   return (it != name_cache_.end()) ? it->second : "";
 }
 
+std::pair<double, double> airport_pos_for(const std::string &icao) {
+  if (icao.empty())
+    return {0.0, 0.0};
+  auto it = pos_cache_.find(icao);
+  return (it != pos_cache_.end()) ? it->second : std::make_pair(0.0, 0.0);
+}
+
 float tower_mhz_for(const std::string &icao) {
   if (!towered_cache_ready_ || icao.empty())
     return 0.0f;
@@ -1735,6 +1893,15 @@ float tower_mhz_for(const std::string &icao) {
   if (it == freq_cache_.end())
     return 0.0f;
   return it->second.first_mhz(FrequencyType::TOWER);
+}
+
+bool has_ground_freq_for(const std::string &icao) {
+  if (!towered_cache_ready_ || icao.empty())
+    return false;
+  auto it = freq_cache_.find(icao);
+  if (it == freq_cache_.end())
+    return false;
+  return it->second.has_ground();
 }
 
 void set_standby_freq(uint32_t freq_khz) {
