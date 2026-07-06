@@ -50,6 +50,7 @@ TTS API.
 
 ## Table of Contents
 
+- [What's New 4.2.1](#whats-new-421)
 - [Features](#features)
 - [Hardware Requirements](#hardware-requirements)
 - [Software Requirements](#software-requirements)
@@ -70,6 +71,156 @@ TTS API.
 - [Development Workflow](#development-workflow)
 - [License](#license)
 - [Flight schools and commercial training](#flight-schools-and-commercial-training)
+
+## What's New 4.2.1
+
+Release 4.2.1 is an IFR-focused maintenance release. It hardens the
+en-route / approach handoff chain, tightens frequency gating so a
+check-in is only accepted on the correct sector frequency, fixes several
+approach + landing phraseology gaps (CIFP-assigned runway, spoken airport
+name, unit-consistent altitude handling), adds an IFR flight-plan-closure
+flow, and improves taxi-exit detection and STT biasing. IFR remains
+EU-profile only and under active development (see
+[IFR ATC — What's Included](#ifr-atc--whats-included)).
+
+Each block below opens with a short pilot-facing summary; the bullets
+underneath carry the implementation detail (internal symbol / state names)
+for contributors.
+
+### Handoff / frequency-gate fixes
+
+Sector and frequency handoffs are now consistent: ATC accepts your
+check-in only on the new sector's frequency, does not re-announce a
+frequency you are already tuned to, and always acknowledges the first
+call on a new frequency instead of clearing you silently.
+
+- En-route sector-change now updates `s_enroute_approach_freq_mhz` when
+  the new sector is a TRACON, so the check-in handler no longer accepts a
+  call on the old sector's frequency (the unknown/training fallback was
+  previously accepting any frequency).
+- Sector-change suppresses the "contact X on Y" announcement when the
+  pilot's active COM already matches the new sector frequency (aircraft
+  re-entering an earlier sector). Applies to both the en-route and the
+  approach sector-change paths.
+- `check_handoff_reissue` extended to `IFR/DESCENT`,
+  `IFR/APPROACH_CONTACT`, `IFR/APPROACH_DESCENT`, `IFR/APPROACH_TOWER`,
+  `IFR/LANDING_CLEARED`.
+- Frequency-based intent promotion accepts `INITIAL_CALL_CENTER` as an
+  approach check-in variant.
+- FAF Tower/AFIS handoff updates `s_current_controller_label` and
+  `s_pending_handoff_freq_mhz` so the next TTS speaker prefix matches the
+  new facility.
+- The sector-checkin path defers to the richer check-in handlers when the
+  pilot's frequency matches `s_enroute_approach_freq_mhz` — a full
+  approach clearance instead of a bare "radar contact" ack.
+- Sector-checkin ack is mandatory: the silent clear was removed. ATC now
+  replies "radar contact" (or a full clearance) when the pilot first
+  calls on the new frequency.
+
+### Readback verifier
+
+A misclassified readback no longer poisons the next transmission with a
+spurious "negative" correction.
+
+- Post-hooks silently clear stale readback state when the LM
+  misclassifies a valid readback as `INITIAL_CALL_CENTER` /
+  `INITIAL_CALL_APPROACH` — this stops the next unrelated readback from
+  tripping "negative, flight level seven zero".
+
+### Approach + landing phraseology
+
+Approach and landing clearances are more forgiving of garbled facility
+names and now issue the correct, CIFP-assigned runway with the spoken
+airport name.
+
+- The approach check-in state gate accepts `IFR/APPROACH_CONTACT` and
+  `IFR/DESCENT`.
+- Broadened check-in intent set: any `INITIAL_CALL_*` variant or
+  `UNKNOWN` fires the full clearance when the pilot is on the approach
+  frequency — frequency is authoritative over the spoken facility name.
+- Broadened Tower/AFIS check-in similarly — "Reims Prunay Information" and
+  Voxtral-garbled forms trigger the landing clearance.
+- Landing clearance uses the CIFP-assigned runway
+  (`set_assigned_runway`), so Tower issues RWY 07 rather than the
+  wind-favoured RWY 29 on calm days.
+- The airport name (e.g. "Reims Prunay Information") replaces the ICAO
+  code ("LFQA Information") in every spoken controller label and handoff
+  phrase.
+- `initial_ft` comparisons switched to unit-consistent references: FL vs
+  pressure altitude, feet (QNH) vs altitude MSL. The same branching is
+  applied to `no_descent_needed`, the floor-only skip, and the
+  initial-target loops.
+- "Continue descent to X" fires only when Approach's target equals
+  Centre's last cleared altitude; a new (lower) target uses "descend X".
+
+### Route + IAF handling
+
+Direct-to-IAF clearances no longer leave the route tracker stuck at the
+dual-use fix on RNAV approaches.
+
+- Restored step 4 in `init_route_fixes`: a direct-to-IAF jumps the
+  tracker to that fix so the guard clears at the dual-use IAF/MAP-hold
+  pattern.
+- The `at_faf` primary check is suppressed when
+  `s_iaf_route_idx > s_faf_route_idx` (LFQA RNAV R07/R25 dual-use fix
+  pattern).
+
+### IFR flight plan closure
+
+After landing, ATC now tells you how to close the IFR flight plan and
+keeps you in the landing state until you have read back the taxi
+instruction.
+
+- New handler in `IFR/LANDING_CLEARED` distinguishes AFIS vs towered:
+  - AFIS → "leaving frequency approved, contact by telephone to close IFR
+    flight plan, good day."
+  - Towered → "IFR flight plan closed at HHMM, good day."
+- `RUNWAY_VACATED_TOWER_ONLY` now stays in `IFR/LANDING_CLEARED` (no
+  premature `IDLE`) and requires readback of the taxi + report-on-stand
+  instruction.
+
+### Taxi exit detection
+
+The runway-exit / taxi phrase now names the taxiway you are physically
+on, and falls back to "to the apron" when you are clear of the graph.
+
+- `nearest_taxiway_phrase` now uses point-to-segment distance against
+  every taxiway edge (from the apt.dat 1202 records) instead of the
+  closest midpoint, and returns "to the apron" when the aircraft is more
+  than 40 m from any named edge. It picks the taxiway the aircraft is
+  actually on.
+
+### STT bias
+
+Speech-to-text is biased toward the runway and callsign in play, so RNAV
+runway idents and your tail number transcribe more reliably.
+
+- Dynamic "R-NAV NN" + "RNAV NN" bias emitted per assigned landing
+  runway.
+- Callsign last-2-letters bigram (e.g. "Romeo Charlie") appended to the
+  prompt.
+- "arm of", "r nav", "r-nav" → "rnav" added to `kPhraseAliases`.
+
+### Verify-descending prompt
+
+ATC now gives a gentle "confirm descending" nudge before the harder
+altitude-deviation warning if you are not yet coming down.
+
+- Sub-phase 2.4 fires "confirm descending X" 45-100 s after a clearance
+  when `|VS| < 200 fpm` and the aircraft is 500-800 ft off target —
+  ahead of the harder "check altitude" deviation warning.
+
+### Altitude deviation warning
+
+The altitude-deviation warning now compares against the right reference
+(pressure altitude above the transition altitude, QNH altitude below it)
+and uses matching phraseology.
+
+- The comparison branches on the transition altitude: FL clearances
+  compare against `ctx.pressure_alt_ft` (ISA), feet clearances against
+  `ctx.altitude_ft_msl` (QNH).
+- Phraseology "assigned altitude N feet" for feet clearances; "assigned
+  flight level N" for FL clearances.
 
 ## Features
 
