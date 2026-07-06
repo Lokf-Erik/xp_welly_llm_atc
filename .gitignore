@@ -8,6 +8,7 @@ build-mac-fast/
 dist/
 dist-win/
 download/
+__pycache__/
 sdk/
 vendor/
 .idea/

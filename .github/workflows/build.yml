@@ -338,6 +338,14 @@ jobs:
 
           cp -r docs "$STAGE/docs"
 
+          # SkunkCrafts Updater control files INTO the staged tree, BEFORE the
+          # zip, so the release ZIP also carries skunkcrafts_updater.cfg (manual
+          # installers become updater-discoverable). data/settings.json is
+          # marked once-only (never overwritten on update); version from the tag
+          # (v1.2.3 -> 1.2.3).
+          python3 tools/skunkcrafts/generate.py \
+            --tree "$STAGE" --version "${GITHUB_REF_NAME#v}"
+
           cd dist && zip -r xp_wellys_atc.zip xp_wellys_atc/
 
       - name: Create release with combined asset
@@ -345,3 +353,26 @@ jobs:
         with:
           files: dist/xp_wellys_atc.zip
           generate_release_notes: true
+
+      - name: Publish SkunkCrafts update tree
+        # Force-push the staged plugin tree to the `release` branch that the
+        # skunkcrafts_updater.cfg `module` URL serves via raw.githubusercontent.
+        # Single orphan commit each release => the branch never accumulates
+        # history (binaries don't bloat the repo over time). Cloud-only bundle,
+        # so nothing large to strip first. Requires repo Settings -> Actions ->
+        # Workflow permissions -> "Read and write permissions".
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          STAGE=dist/xp_wellys_atc
+          pushd "$STAGE"
+          git init -q
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "release ${GITHUB_REF_NAME}"
+          git branch -M release
+          git push --force \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" release
+          popd
