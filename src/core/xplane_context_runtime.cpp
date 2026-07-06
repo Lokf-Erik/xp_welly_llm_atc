@@ -24,7 +24,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstdio>
-#include <dirent.h>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -953,15 +953,15 @@ static void build_towered_cache() {
   // (e.g. LFLP with correct surface codes, updated frequencies).
   AptParseData custom;
   std::string cs_root = xplane_system_path() + "Custom Scenery/";
-  DIR *dir = opendir(cs_root.c_str());
-  if (dir) {
-    struct dirent *ent;
-    while ((ent = readdir(dir)) != nullptr) {
-      if (ent->d_name[0] == '.')
-        continue;
-      parse_apt_file(cs_root + ent->d_name + "/Earth nav data/apt.dat", custom);
-    }
-    closedir(dir);
+  // std::filesystem keeps the directory scan portable (POSIX dirent vs
+  // Win32 FindFirstFile). The error_code overload makes a missing
+  // Custom Scenery/ a no-op instead of throwing.
+  std::error_code ec;
+  for (const auto &entry : std::filesystem::directory_iterator(cs_root, ec)) {
+    std::string name = entry.path().filename().string();
+    if (name.empty() || name[0] == '.')
+      continue;
+    parse_apt_file(cs_root + name + "/Earth nav data/apt.dat", custom);
   }
 
   // Merge: custom scenery wins for every ICAO it contains

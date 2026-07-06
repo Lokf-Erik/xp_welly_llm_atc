@@ -114,6 +114,10 @@ const char *frequency_type_name(FrequencyType ft) {
 
 // Weak stubs: atc_repl and headless tests don't link xplane_context_runtime.cpp.
 // The plugin binary links both TUs; the strong definitions in runtime win.
+// MSVC has no weak-symbol equivalent, and the Windows build only ever produces
+// the plugin (which always links the strong runtime definitions), so the stubs
+// are simply omitted there to avoid a duplicate-symbol link error.
+#if !defined(_WIN32)
 __attribute__((weak)) float tower_mhz_for(const std::string &) { return 0.0f; }
 __attribute__((weak)) bool has_ground_freq_for(const std::string &) { return false; }
 __attribute__((weak)) std::string airport_name_for(const std::string &) {
@@ -123,5 +127,6 @@ __attribute__((weak)) std::string nearest_taxiway_phrase(const std::string &,
                                                          double, double) {
   return "to the apron";
 }
+#endif
 
 } // namespace xplane_context
