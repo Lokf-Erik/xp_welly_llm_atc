@@ -13,11 +13,19 @@
 #include <CommonCrypto/CommonDigest.h>
 #elif defined(__linux__)
 #include <openssl/evp.h>
+#elif defined(_WIN32)
+// CNG (Cryptography Next Generation) — SHA256 via bcrypt.h. Links Bcrypt.lib.
+// Include order matters: <windows.h> must precede <bcrypt.h>.
+#define WIN32_LEAN_AND_MEAN
+// clang-format off
+#include <windows.h>
+#include <bcrypt.h>
+// clang-format on
 #endif
-#include <sys/stat.h>
 
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <mutex>
 #include <vector>
 
@@ -288,6 +296,36 @@ std::string sha256_file(const std::string &path) {
   unsigned int dlen = 0;
   EVP_DigestFinal_ex(ctx, digest, &dlen);
   EVP_MD_CTX_free(ctx);
+
+#elif defined(_WIN32)
+  BCRYPT_ALG_HANDLE alg = nullptr;
+  BCRYPT_HASH_HANDLE hash = nullptr;
+  if (BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, nullptr, 0) <
+      0) {
+    std::fclose(f);
+    return {};
+  }
+  if (BCryptCreateHash(alg, &hash, nullptr, 0, nullptr, 0, 0) < 0) {
+    BCryptCloseAlgorithmProvider(alg, 0);
+    std::fclose(f);
+    return {};
+  }
+  size_t n = 0;
+  bool hash_ok = true;
+  while ((n = std::fread(buf.data(), 1, buf.size(), f)) > 0) { // NOLINT(clang-analyzer-unix.Stream)
+    if (BCryptHashData(hash, buf.data(), static_cast<ULONG>(n), 0) < 0) {
+      hash_ok = false;
+      break;
+    }
+  }
+  bool eof_clean = std::feof(f) != 0;
+  std::fclose(f);
+  if (hash_ok)
+    hash_ok = BCryptFinishHash(hash, digest, kDigestLen, 0) >= 0;
+  BCryptDestroyHash(hash);
+  BCryptCloseAlgorithmProvider(alg, 0);
+  if (!eof_clean || !hash_ok)
+    return {};
 #endif
 
   static const char hex[] = "0123456789abcdef";
@@ -300,12 +338,17 @@ std::string sha256_file(const std::string &path) {
 }
 
 bool size_matches(const Entry &e, const std::string &full_path) {
-  struct stat st{};
-  if (stat(full_path.c_str(), &st) != 0)
+  // std::filesystem keeps this platform-neutral (POSIX struct stat vs
+  // MSVC _stat): is_regular_file + file_size with an error_code so a
+  // missing/inaccessible path returns false instead of throwing.
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  if (!fs::is_regular_file(full_path, ec) || ec)
     return false;
-  if (!S_ISREG(st.st_mode))
+  auto sz = fs::file_size(full_path, ec);
+  if (ec)
     return false;
-  return static_cast<uint64_t>(st.st_size) == e.size_bytes;
+  return static_cast<uint64_t>(sz) == e.size_bytes;
 }
 
 } // namespace model_manifest

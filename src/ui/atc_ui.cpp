@@ -48,6 +48,13 @@
 #include <mach/mach.h>
 #include <mach/task.h>
 #include <mach/task_info.h>
+#elif defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+// Include order matters: <windows.h> must precede <psapi.h>.
+// clang-format off
+#include <windows.h>
+#include <psapi.h> // GetProcessMemoryInfo (Psapi.lib)
+// clang-format on
 #endif
 
 #include <XPLMDataAccess.h>
@@ -61,6 +68,13 @@
 
 #if defined(__APPLE__)
 #include <OpenGL/gl.h>
+#elif defined(_WIN32)
+// <windows.h> must precede <GL/gl.h> — it defines WINGDIAPI / APIENTRY
+// that gl.h relies on. (Already pulled in above, guarded.)
+// clang-format off
+#include <windows.h>
+#include <GL/gl.h>
+// clang-format on
 #else
 #include <GL/gl.h>
 #endif
@@ -216,6 +230,11 @@ static uint64_t resident_bytes() {
                 reinterpret_cast<task_info_t>(&info), &count) == KERN_SUCCESS) {
     return info.resident_size;
   }
+  return 0;
+#elif defined(_WIN32)
+  PROCESS_MEMORY_COUNTERS pmc{};
+  if (GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc)))
+    return static_cast<uint64_t>(pmc.WorkingSetSize);
   return 0;
 #else
   // Linux: read VmRSS from /proc/self/status

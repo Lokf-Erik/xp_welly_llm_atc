@@ -194,12 +194,100 @@ jobs:
           path: dist/linux
           retention-days: 1
 
+  # ── Windows slice (windows-latest, cloud-only) ──────────────────────────
+  # Native MSVC build (no cross-compile). Produces win_x64/xp_wellys_atc.xpl
+  # with XPWELLYS_USE_LOCAL_INFERENCE=OFF — functionally the Intel cloud-only
+  # slice: OpenAI + Mistral backends, WASAPI mic capture, Credential Manager
+  # secret store. libcurl is linked statically (vcpkg x64-windows-static,
+  # Schannel TLS) so the artefact ships zero extra DLLs. On tag pushes it
+  # stages just the win_x64 slice; the package job merges it in.
+  build-windows:
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+        # No submodules: the cloud-only slice compiles none of the
+        # whisper/llama/Piper trees, so we skip the multi-GB fetch.
+
+      - name: Set up MSVC developer environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Set up dependencies (SDK headers + Win libs, ImGui, json)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          # X-Plane SDK — headers + Windows import libs. Mirror the paths
+          # `make setup` extracts on mac/Linux, but via PowerShell since
+          # GNU make / unzip aren't guaranteed on the Windows runner.
+          Invoke-WebRequest -Uri "https://developer.x-plane.com/wp-content/plugins/code-sample-generation/sdk_zip_files/XPSDK430.zip" -OutFile sdk.zip
+          Expand-Archive -Path sdk.zip -DestinationPath sdk_tmp -Force
+          New-Item -ItemType Directory -Force -Path sdk/XPLM, sdk/XPWidgets, sdk/Libraries/Win | Out-Null
+          Get-ChildItem -Recurse sdk_tmp -Filter *.h | Where-Object { $_.FullName -match 'CHeaders[\\/]XPLM' }    | Copy-Item -Destination sdk/XPLM/
+          Get-ChildItem -Recurse sdk_tmp -Filter *.h | Where-Object { $_.FullName -match 'CHeaders[\\/]Widgets' } | Copy-Item -Destination sdk/XPWidgets/
+          Get-ChildItem -Recurse sdk_tmp -Filter *.lib | Where-Object { $_.FullName -match 'Libraries[\\/]Win' }  | Copy-Item -Destination sdk/Libraries/Win/
+
+          # Dear ImGui v1.91.9 (renderer + core TUs used by atc_ui).
+          Invoke-WebRequest -Uri "https://github.com/ocornut/imgui/archive/refs/tags/v1.91.9.zip" -OutFile imgui.zip
+          Expand-Archive -Path imgui.zip -DestinationPath imgui_tmp -Force
+          $src = "imgui_tmp/imgui-1.91.9"
+          New-Item -ItemType Directory -Force -Path vendor/imgui/backends | Out-Null
+          Copy-Item "$src/imgui.h","$src/imgui.cpp","$src/imgui_draw.cpp","$src/imgui_tables.cpp","$src/imgui_widgets.cpp","$src/imgui_internal.h","$src/imconfig.h","$src/imstb_textedit.h","$src/imstb_rectpack.h","$src/imstb_truetype.h" -Destination vendor/imgui/
+          Copy-Item "$src/backends/imgui_impl_opengl2.h","$src/backends/imgui_impl_opengl2.cpp" -Destination vendor/imgui/backends/
+
+          # nlohmann/json single header.
+          Invoke-WebRequest -Uri "https://github.com/nlohmann/json/releases/download/v3.11.3/json.hpp" -OutFile vendor/json.hpp
+
+      - name: Install libcurl (static, Schannel TLS) via vcpkg
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & "$env:VCPKG_INSTALLATION_ROOT/vcpkg.exe" install curl:x64-windows-static
+
+      - name: Configure + build (win_x64, cloud-only)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $releaseFlag = @()
+          if ($env:GITHUB_REF -like "refs/tags/v*") { $releaseFlag = @("-DRELEASE=ON") }
+          cmake -B build-win -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            -DVCPKG_TARGET_TRIPLET=x64-windows-static `
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded `
+            -DXPWELLYS_USE_LOCAL_INFERENCE=OFF `
+            -DBUILD_TESTS=OFF `
+            @releaseFlag `
+            -Wno-dev
+          # Build just the plugin — atc_repl / atc_ifr_repl are dev tools not
+          # shipped on Windows, and skipping them keeps the CI focused on the
+          # deliverable .xpl.
+          cmake --build build-win --config Release --target xp_wellys_atc
+
+      - name: Stage Windows slice
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force -Path dist/windows/win_x64 | Out-Null
+          Copy-Item build-win/xp_wellys_atc.xpl dist/windows/win_x64/
+
+      - name: Upload Windows slice
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: slice-windows
+          path: dist/windows
+          retention-days: 1
+
   # ── Package + release (one combined bundle) ─────────────────────────────
-  # Merges both platform slices with the shared data/ + docs/ + Resources/
+  # Merges all platform slices with the shared data/ + docs/ + Resources/
   # into a single X-Plane plugin folder and publishes one release ZIP.
   # Runs on tag pushes only.
   package:
-    needs: [build-macos, build-linux]
+    needs: [build-macos, build-linux, build-windows]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     permissions:
@@ -220,6 +308,12 @@ jobs:
           name: slice-linux
           path: slice-linux
 
+      - name: Download Windows slice
+        uses: actions/download-artifact@v4
+        with:
+          name: slice-windows
+          path: slice-windows
+
       - name: Assemble combined bundle
         run: |
           set -euo pipefail
@@ -230,6 +324,7 @@ jobs:
           # Platform slices (X-Plane auto-loads the matching one at runtime).
           cp -R slice-macos/mac_x64   "$STAGE/"
           cp -R slice-linux/lin_x64   "$STAGE/"
+          cp -R slice-windows/win_x64 "$STAGE/"
 
           # Shared, platform-independent espeak-ng-data (from the macOS slice).
           cp -R slice-macos/Resources/espeak-ng-data "$STAGE/Resources/"
