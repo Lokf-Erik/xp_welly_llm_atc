@@ -49,7 +49,9 @@
 #include <mach/task.h>
 #include <mach/task_info.h>
 #elif defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
 // Include order matters: <windows.h> must precede <psapi.h>.
 // clang-format off
 #include <windows.h>

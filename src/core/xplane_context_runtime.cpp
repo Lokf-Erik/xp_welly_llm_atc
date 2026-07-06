@@ -1603,14 +1603,16 @@ void update() {
                                            rwy.end1.lat, rwy.end1.lon);
             double d2 = haversine_distance(ctx.latitude, ctx.longitude,
                                            rwy.end2.lat, rwy.end2.lon);
-            std::string near;
+            // NB: not "near" — that's a legacy MSVC macro (<windows.h> pulls
+            // it in via the SDK headers when IBM=1) and expands to nothing.
+            std::string near_num;
             if (d1 < kThresholdRadiusM && d1 <= d2)
-              near = rwy.end1.number;
+              near_num = rwy.end1.number;
             else if (d2 < kThresholdRadiusM)
-              near = rwy.end2.number;
-            if (near.empty())
+              near_num = rwy.end2.number;
+            if (near_num.empty())
               continue;
-            ctx.active_runway = near;
+            ctx.active_runway = near_num;
             ctx.active_runway_holding_point.clear();
             if (hit != holding_cache_.end()) {
               auto rit2 = hit->second.find(ctx.active_runway);

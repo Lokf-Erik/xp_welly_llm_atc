@@ -38,7 +38,9 @@
 
 #include <XPLMUtilities.h>
 
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
 // These Win32 audio headers have a strict include order: <windows.h>
 // first, and <ksmedia.h> (KSDATAFORMAT_SUBTYPE_*) depends on
 // WAVEFORMATEXTENSIBLE from <mmreg.h>.

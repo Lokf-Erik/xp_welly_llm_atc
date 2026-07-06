@@ -16,7 +16,9 @@
 #elif defined(_WIN32)
 // CNG (Cryptography Next Generation) — SHA256 via bcrypt.h. Links Bcrypt.lib.
 // Include order matters: <windows.h> must precede <bcrypt.h>.
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
 // clang-format off
 #include <windows.h>
 #include <bcrypt.h>

@@ -23,7 +23,9 @@
 #include <sys/types.h>
 #include <unistd.h>
 #elif defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
 // Include order matters: <windows.h> must precede <wincred.h>.
 // clang-format off
 #include <windows.h>
