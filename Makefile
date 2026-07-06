@@ -41,7 +41,7 @@ LINT_EXCLUDE := src/audio/audio_input_coreaudio.cpp
 endif
 LINT_SOURCES := $(filter-out $(LINT_EXCLUDE),$(wildcard src/main.cpp src/*/*.cpp))
 
-.PHONY: all help setup build install install-mac install-linux install-data package clean distclean format lint sanitize release release-build cleanup-tags cleanup-branches cleanup-runs repl run-repl ifr-repl run-ifr-repl test test-unit test-scenarios
+.PHONY: all help setup setup-cloud build install install-mac install-linux install-data package clean distclean format lint sanitize release release-build cleanup-tags cleanup-branches cleanup-runs cleanup-cache repl run-repl ifr-repl run-ifr-repl test test-unit test-scenarios ci-remote win-artifact
 
 .DEFAULT_GOAL := help
 
@@ -54,6 +54,7 @@ help:
 	@echo "  make                   Show this help (default)"
 	@echo "  make all               clean + format + build + lint"
 	@echo "  make setup             Init submodules + download X-Plane SDK, Dear ImGui, nlohmann/json, Catch2"
+	@echo "  make setup-cloud       Setup WITHOUT local-inference submodules (cloud-only; used by CI)"
 	@echo "  make build             Build universal plugin (arm64 local+cloud, x86_64 cloud-only) -> build/xp_wellys_atc.xpl"
 	@echo "  make repl              Build headless CLI -> build/atc_repl"
 	@echo "  make run-repl          Build + run the CLI (stdin transcripts)"
@@ -71,6 +72,9 @@ help:
 	@echo "  make cleanup-tags      Prune local tags no longer on origin"
 	@echo "  make cleanup-branches  Prune local branches whose remote is gone"
 	@echo "  make cleanup-runs      Delete all GitHub Actions runs except the newest per workflow"
+	@echo "  make cleanup-cache     Delete all GitHub Actions caches (freed on next CI run)"
+	@echo "  make ci-remote         Trigger the GitHub CI (mac + Windows slice) on the current branch via gh (builds the PUSHED state)"
+	@echo "  make win-artifact      Download the newest Windows CI artifact (xp_wellys_atc-win) via gh -> dist-win/"
 	@echo "  make clean             Remove build/, build-lint/ and build-sanitize/"
 	@echo "  make distclean         clean + remove sdk/ and vendor/ (everything 'make setup' installed)"
 	@echo "  make help              Show this help"
@@ -78,6 +82,13 @@ help:
 # ── Setup ─────────────────────────────────────────────────────────────────────
 setup: $(SUBMODULES_SENTINEL) $(SDK_SENTINEL) $(IMGUI_SENTINEL) $(JSON_SENTINEL) $(CATCH2_SENTINEL)
 	@echo "Setup complete. Run 'make build' to compile."
+
+# Cloud-only setup: SDK + ImGui + json + Catch2, WITHOUT the local-inference
+# submodules (whisper.cpp / llama.cpp / Piper). Used by CI, which builds
+# cloud-only and never compiles those trees — skipping the multi-GB submodule
+# fetch is the bulk of the CI speedup.
+setup-cloud: $(SDK_SENTINEL) $(IMGUI_SENTINEL) $(JSON_SENTINEL) $(CATCH2_SENTINEL)
+	@echo "Cloud-only setup complete (no local-inference submodules)."
 
 $(SUBMODULES_SENTINEL):
 	@if [ ! -d .git ]; then \
@@ -215,9 +226,11 @@ else
 endif
 
 # ── REPL (headless CLI) ───────────────────────────────────────────────────────
-repl: $(SUBMODULES_SENTINEL) $(SDK_SENTINEL) $(IMGUI_SENTINEL) $(JSON_SENTINEL) $(CATCH2_SENTINEL)
+repl: $(SDK_SENTINEL) $(IMGUI_SENTINEL) $(JSON_SENTINEL) $(CATCH2_SENTINEL)
 	@echo "=== Building atc_repl ==="
-	cmake -B build -DCMAKE_BUILD_TYPE=Release -Wno-dev
+	# SDK-free dev tool — LOCAL_INFERENCE=OFF keeps it submodule-independent.
+	cmake -B build -DCMAKE_BUILD_TYPE=Release \
+	    -DXPWELLYS_USE_LOCAL_INFERENCE=OFF -Wno-dev
 	cmake --build build --target atc_repl --parallel
 	@echo ""
 	@file build/atc_repl
@@ -227,9 +240,11 @@ run-repl: repl
 	./build/atc_repl
 
 # ── IFR REPL (headless IFR approach test CLI) ─────────────────────────────────
-ifr-repl: $(SUBMODULES_SENTINEL) $(SDK_SENTINEL) $(IMGUI_SENTINEL) $(JSON_SENTINEL) $(CATCH2_SENTINEL)
+ifr-repl: $(SDK_SENTINEL) $(IMGUI_SENTINEL) $(JSON_SENTINEL) $(CATCH2_SENTINEL)
 	@echo "=== Building atc_ifr_repl ==="
-	cmake -B build -DCMAKE_BUILD_TYPE=Release -Wno-dev
+	# SDK-free dev tool — LOCAL_INFERENCE=OFF keeps it submodule-independent.
+	cmake -B build -DCMAKE_BUILD_TYPE=Release \
+	    -DXPWELLYS_USE_LOCAL_INFERENCE=OFF -Wno-dev
 	cmake --build build --target atc_ifr_repl --parallel
 	@echo ""
 	@file build/atc_ifr_repl
@@ -241,9 +256,13 @@ run-ifr-repl: ifr-repl
 # ── Tests ─────────────────────────────────────────────────────────────────────
 test: test-unit test-scenarios
 
-test-unit: $(SUBMODULES_SENTINEL) $(SDK_SENTINEL) $(IMGUI_SENTINEL) $(JSON_SENTINEL) $(CATCH2_SENTINEL)
+test-unit: $(SDK_SENTINEL) $(IMGUI_SENTINEL) $(JSON_SENTINEL) $(CATCH2_SENTINEL)
 	@echo "=== Building xp_wellys_atc unit tests ==="
-	cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=ON -Wno-dev
+	# Tests exercise the SDK-free engine only; the local backends are never
+	# linked, so LOCAL_INFERENCE=OFF is functionally identical here and keeps
+	# the configure independent of the whisper/llama/Piper submodules.
+	cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=ON \
+	    -DXPWELLYS_USE_LOCAL_INFERENCE=OFF -Wno-dev
 	cmake --build build --target xp_wellys_atc_tests --parallel
 	@echo ""
 	@echo "=== Running unit tests ==="
@@ -575,6 +594,57 @@ cleanup-runs:
 	        | xargs -I {} gh run delete {}; \
 	done
 	@echo "Cleanup complete."
+
+# Delete GitHub Actions caches. ccache entries accumulate per branch/key
+# (and old keys go stale after a CI change like the cloud-only switch);
+# GitHub's 10 GB LRU evicts them eventually, but this frees the quota now.
+# All caches are rebuilt automatically on the next run.
+cleanup-cache:
+	@command -v gh >/dev/null 2>&1 || { \
+	    echo "gh not found. Install with: brew install gh"; exit 1; }
+	@echo "Current GitHub Actions caches:"
+	@gh cache list --limit 100 2>/dev/null || true
+	@echo ""
+	@echo "Deleting all caches (rebuilt on the next CI run)..."
+	@gh cache delete --all 2>/dev/null || echo "No caches to delete."
+	@echo "Cache cleanup complete."
+
+# ── Remote CI (Windows build via GitHub Actions) ──────────────────────────────
+# The Windows slice can only be compiled by CI (no local MSVC toolchain on a
+# Mac). `ci-remote` pushes the current branch and dispatches the build
+# workflow against the pushed state; `win-artifact` downloads the resulting
+# drop-in Windows plugin folder into dist-win/.
+ci-remote:
+	@command -v gh >/dev/null 2>&1 || { \
+	    echo "gh not found. Install with: brew install gh"; exit 1; }
+	@BRANCH=$$(git rev-parse --abbrev-ref HEAD); \
+	echo "Pushing $$BRANCH and dispatching CI (builds the pushed state)..."; \
+	git push -u origin "$$BRANCH"; \
+	gh workflow run build.yml --ref "$$BRANCH" || { \
+	    echo ""; \
+	    echo "NOTE: workflow_dispatch is only accepted once build.yml (with the"; \
+	    echo "'workflow_dispatch' trigger) exists on the default branch (main)."; \
+	    echo "Until then, open a PR for this branch — the PR build produces the"; \
+	    echo "same xp_wellys_atc-win artifact that 'make win-artifact' downloads."; \
+	    exit 1; }
+	@echo "Dispatched. Watch: gh run watch  (or: make win-artifact once green)"
+
+win-artifact:
+	@command -v gh >/dev/null 2>&1 || { \
+	    echo "gh not found. Install with: brew install gh"; exit 1; }
+	@BRANCH=$$(git rev-parse --abbrev-ref HEAD); \
+	RUN_ID=$$(gh run list --workflow build.yml --branch "$$BRANCH" --limit 1 \
+	    --json databaseId -q '.[0].databaseId'); \
+	if [ -z "$$RUN_ID" ]; then \
+	    echo "No CI run found for branch $$BRANCH. Run 'make ci-remote' first."; \
+	    exit 1; \
+	fi; \
+	echo "Downloading xp_wellys_atc-win from run $$RUN_ID -> dist-win/ ..."; \
+	rm -rf dist-win; mkdir -p dist-win; \
+	gh run download "$$RUN_ID" -n xp_wellys_atc-win -D dist-win || { \
+	    echo "Artifact not available yet (run still in progress or failed)."; \
+	    echo "Check status: gh run view $$RUN_ID"; exit 1; }
+	@echo "Done. Copy dist-win/xp_wellys_atc/ into X-Plane 12/Resources/plugins/"
 
 # ── Clean ─────────────────────────────────────────────────────────────────────
 clean:

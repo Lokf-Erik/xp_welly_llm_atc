@@ -22,6 +22,15 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#elif defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+// Include order matters: <windows.h> must precede <wincred.h>.
+// clang-format off
+#include <windows.h>
+#include <wincred.h> // Windows Credential Manager (Advapi32.lib)
+// clang-format on
 #endif
 
 namespace persistence::keychain {
@@ -172,6 +181,79 @@ bool has(const std::string &service, const std::string &account) {
   if (path.empty())
     return false;
   return access(path.c_str(), F_OK) == 0;
+}
+
+#elif defined(_WIN32)
+
+// Windows Credential Manager backend. Each (service, account) maps to a
+// generic credential named "<service>/<account>" (e.g.
+// "com.xp_wellys_atc.openai/default"), persisted per-machine. Credential
+// Manager encrypts the blob via DPAPI under the hood — functionally
+// equivalent to the Keychain's "no plaintext secret on disk" guarantee.
+
+namespace {
+
+std::wstring utf8_to_wide(const std::string &s) {
+  if (s.empty())
+    return {};
+  int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()),
+                              nullptr, 0);
+  std::wstring w(static_cast<size_t>(n), L'\0');
+  MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()),
+                      w.data(), n);
+  return w;
+}
+
+std::wstring target_name(const std::string &service,
+                         const std::string &account) {
+  return utf8_to_wide(service + "/" + account);
+}
+
+} // namespace
+
+bool save(const std::string &service, const std::string &account,
+          const std::string &api_key) {
+  if (api_key.empty())
+    return false;
+  std::wstring target = target_name(service, account);
+
+  CREDENTIALW cred{};
+  cred.Type = CRED_TYPE_GENERIC;
+  cred.TargetName = const_cast<LPWSTR>(target.c_str());
+  // Store the raw UTF-8 key bytes in the blob; load() returns them
+  // verbatim. No wide conversion of the secret itself.
+  cred.CredentialBlobSize = static_cast<DWORD>(api_key.size());
+  cred.CredentialBlob =
+      reinterpret_cast<LPBYTE>(const_cast<char *>(api_key.data()));
+  cred.Persist = CRED_PERSIST_LOCAL_MACHINE;
+
+  return CredWriteW(&cred, 0) == TRUE;
+}
+
+std::string load(const std::string &service, const std::string &account) {
+  std::wstring target = target_name(service, account);
+  PCREDENTIALW cred = nullptr;
+  if (!CredReadW(target.c_str(), CRED_TYPE_GENERIC, 0, &cred) || !cred)
+    return {};
+  std::string result(reinterpret_cast<char *>(cred->CredentialBlob),
+                     cred->CredentialBlobSize);
+  CredFree(cred);
+  return result;
+}
+
+bool remove(const std::string &service, const std::string &account) {
+  std::wstring target = target_name(service, account);
+  return CredDeleteW(target.c_str(), CRED_TYPE_GENERIC, 0) == TRUE;
+}
+
+bool has(const std::string &service, const std::string &account) {
+  std::wstring target = target_name(service, account);
+  PCREDENTIALW cred = nullptr;
+  if (CredReadW(target.c_str(), CRED_TYPE_GENERIC, 0, &cred) && cred) {
+    CredFree(cred);
+    return true;
+  }
+  return false;
 }
 
 #else

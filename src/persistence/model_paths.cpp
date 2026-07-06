@@ -10,7 +10,11 @@
 #include <XPLMPlugin.h>
 #include <XPLMUtilities.h>
 
+#if defined(_WIN32)
+#include <direct.h> // _mkdir
+#else
 #include <sys/stat.h>
+#endif
 
 namespace model_paths {
 
@@ -42,20 +46,32 @@ std::string normalise_path(std::string p) {
   return p;
 }
 
+// Create a single directory. POSIX takes a mode; MSVC's _mkdir does not.
+int make_one_dir(const std::string &path) {
+#if defined(_WIN32)
+  return _mkdir(path.c_str());
+#else
+  return mkdir(path.c_str(), 0755);
+#endif
+}
+
+bool is_sep(char c) { return c == '/' || c == '\\'; }
+
 void mkdir_p(const std::string &dir) {
   // Best-effort recursive mkdir. We can't use std::filesystem::create_
   // directories here because libpiper's espeak-ng ExternalProject
-  // builds against a different libstdc++ ABI; sticking to POSIX keeps
-  // both worlds happy.
+  // builds against a different libstdc++ ABI; sticking to the C runtime
+  // mkdir keeps both worlds happy. Both separators are honoured so a
+  // Windows native path (backslashes, drive letter) resolves too.
   std::string cur;
   for (size_t i = 0; i < dir.size(); ++i) {
     cur.push_back(dir[i]);
-    if (dir[i] == '/' && cur.size() > 1) {
-      mkdir(cur.c_str(), 0755);
+    if (is_sep(dir[i]) && cur.size() > 1) {
+      make_one_dir(cur);
     }
   }
-  if (!cur.empty() && cur.back() != '/') {
-    mkdir(cur.c_str(), 0755);
+  if (!cur.empty() && !is_sep(cur.back())) {
+    make_one_dir(cur);
   }
 }
 
@@ -71,10 +87,11 @@ void init() {
 
   // .../plugins/xp_wellys_atc/mac_x64/xp_wellys_atc.xpl
   //   ^ plugin_root              ^ platform_dir   ^ filename
-  // Strip the filename, then strip the platform dir.
-  auto pos = xpl_path.rfind('/');
-  if (pos != std::string::npos) {
-    pos = xpl_path.rfind('/', pos - 1);
+  // Strip the filename, then strip the platform dir. Windows native
+  // paths use backslashes (and win_x64/), so accept either separator.
+  auto pos = xpl_path.find_last_of("/\\");
+  if (pos != std::string::npos && pos > 0) {
+    pos = xpl_path.find_last_of("/\\", pos - 1);
   }
   if (pos != std::string::npos) {
     g_plugin_root = xpl_path.substr(0, pos);

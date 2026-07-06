@@ -11,6 +11,15 @@
 #ifndef LOGGING_HPP
 #define LOGGING_HPP
 
+// printf-style format checking: GCC/Clang honour the attribute; MSVC has
+// no equivalent, so it degrades to a no-op there.
+#if defined(__GNUC__) || defined(__clang__)
+#define XP_PRINTF_FORMAT(fmt_idx, args_idx)                                    \
+  __attribute__((format(printf, fmt_idx, args_idx)))
+#else
+#define XP_PRINTF_FORMAT(fmt_idx, args_idx)
+#endif
+
 namespace logging {
 
 using Sink = void (*)(const char *);
@@ -20,9 +29,9 @@ using Sink = void (*)(const char *);
 // client before any sink is installed.
 void set_sink(Sink s);
 
-void debug(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
-void info(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
-void error(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+void debug(const char *fmt, ...) XP_PRINTF_FORMAT(1, 2);
+void info(const char *fmt, ...) XP_PRINTF_FORMAT(1, 2);
+void error(const char *fmt, ...) XP_PRINTF_FORMAT(1, 2);
 
 } // namespace logging
 

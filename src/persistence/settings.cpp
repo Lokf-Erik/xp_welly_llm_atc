@@ -24,7 +24,11 @@
 #include <cctype>
 #include <fstream>
 #include <string>
+#if defined(_WIN32)
+#include <direct.h> // _mkdir
+#else
 #include <sys/stat.h>
+#endif
 
 #include <XPLMPlugin.h>
 #include <XPLMUtilities.h>
@@ -33,6 +37,18 @@
 namespace settings {
 
 using json = nlohmann::json;
+
+namespace {
+// Create a single directory, platform-neutral (POSIX mkdir takes a mode,
+// MSVC's _mkdir does not). Best-effort — an existing dir is fine.
+void make_dir(const std::string &path) {
+#if defined(_WIN32)
+  _mkdir(path.c_str());
+#else
+  mkdir(path.c_str(), 0755);
+#endif
+}
+} // namespace
 
 static json cfg;
 static std::string data_dir_path;
@@ -129,10 +145,12 @@ void init() {
   }
 #endif
 
-  // Strip filename → directory, then strip platform dir (mac_x64/)
-  auto pos = path_str.rfind('/');
-  if (pos != std::string::npos) {
-    pos = path_str.rfind('/', pos - 1);
+  // Strip filename → directory, then strip platform dir (mac_x64/).
+  // Windows native paths use backslashes (win_x64/), so accept either
+  // separator when locating the plugin root.
+  auto pos = path_str.find_last_of("/\\");
+  if (pos != std::string::npos && pos > 0) {
+    pos = path_str.find_last_of("/\\", pos - 1);
   }
   if (pos != std::string::npos) {
     data_dir_path = path_str.substr(0, pos) + "/data";
@@ -140,7 +158,7 @@ void init() {
     data_dir_path = "data";
   }
 
-  mkdir(data_dir_path.c_str(), 0755);
+  make_dir(data_dir_path);
 
   // Load the model catalog BEFORE default_config() — default_config()
   // calls model_manifest::default_voice_for(), which now reads from
@@ -269,7 +287,7 @@ std::string user_prefs_dir() {
   char xp_root[2048] = {};
   XPLMGetSystemPath(xp_root);
   std::string path = std::string(xp_root) + "Output/preferences/xp_wellys_atc";
-  mkdir(path.c_str(), 0755);
+  make_dir(path);
   return path;
 }
 

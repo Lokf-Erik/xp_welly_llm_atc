@@ -251,6 +251,19 @@ if(UNIX AND NOT APPLE)
     find_package(OpenSSL REQUIRED)
     target_link_libraries(xp_atc_engine PUBLIC OpenSSL::Crypto)
 endif()
+if(WIN32)
+    # libcurl pulls in <windows.h>; NOMINMAX + lean headers avoid the
+    # min/max macro + WinSock clashes, _USE_MATH_DEFINES gives M_PI.
+    target_compile_definitions(xp_atc_engine PRIVATE
+        NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS _USE_MATH_DEFINES)
+    target_compile_options(xp_atc_engine PRIVATE /W3 /utf-8)
+    # Bcrypt (CNG) backs model_manifest.cpp's SHA256 on Windows. CURL is
+    # needed so manager.cpp finds <curl/curl.h> at compile time — on
+    # mac/Linux curl sits in a system include path, but the vcpkg static
+    # build puts it under the imported target's include dirs only. PUBLIC
+    # so every consumer of the engine OBJECT lib inherits both.
+    target_link_libraries(xp_atc_engine PUBLIC bcrypt CURL::libcurl)
+endif()
 if(XP_WELLYS_ATC_SANITIZE)
     target_compile_options(xp_atc_engine PRIVATE
         ${XP_WELLYS_ATC_SANITIZER_FLAGS} -O1 -g
@@ -266,6 +279,9 @@ if(APPLE)
 elseif(UNIX AND NOT APPLE)
     set(MIC_PERMISSION_SRC src/audio/mic_permission_linux.cpp)
     set(CLIPBOARD_SRC      src/ui/clipboard_linux.cpp)
+elseif(WIN32)
+    set(MIC_PERMISSION_SRC src/audio/mic_permission_win.cpp)
+    set(CLIPBOARD_SRC      src/ui/clipboard_win.cpp)
 endif()
 
 # ── Plugin MODULE (Engine + X-Plane-spezifisch) ──────────────────────────────
@@ -342,6 +358,10 @@ if(APPLE)
 elseif(UNIX AND NOT APPLE)
     target_sources(xp_wellys_atc PRIVATE
         src/audio/audio_input_pulseaudio.cpp
+    )
+elseif(WIN32)
+    target_sources(xp_wellys_atc PRIVATE
+        src/audio/audio_input_wasapi.cpp
     )
 endif()
 
@@ -556,6 +576,38 @@ if(UNIX AND NOT APPLE)
             INSTALL_RPATH "\$ORIGIN"
         )
     endif()
+endif()
+
+# ── Windows plugin link + compile block ──────────────────────────────────────
+# Cloud-only (XPWELLYS_USE_LOCAL_INFERENCE is forced OFF for this slice):
+# libcurl (static, Schannel TLS via vcpkg) + the two SDK import libs +
+# the Win32 system libs the ported code needs. No rpath / lipo / codesign /
+# dylib staging — the .xpl is a self-contained DLL.
+if(WIN32)
+    target_compile_definitions(xp_wellys_atc PRIVATE
+        APL=0 IBM=1 LIN=0
+        XPLM200=1 XPLM210=1 XPLM300=1 XPLM301=1 XPLM400=1
+        NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS _USE_MATH_DEFINES
+        XP_WELLYS_ATC_VERSION="${VERSION_STRING}"
+    )
+    target_compile_options(xp_wellys_atc PRIVATE /W3 /utf-8)
+
+    set(SDK_WIN_LIBS "${CMAKE_SOURCE_DIR}/sdk/Libraries/Win")
+    target_link_libraries(xp_wellys_atc PRIVATE
+        "${SDK_WIN_LIBS}/XPLM_64.lib"
+        "${SDK_WIN_LIBS}/XPWidgets_64.lib"
+        # libcurl (model downloader + both cloud client families).
+        CURL::libcurl
+        # System libs replacing the mac frameworks:
+        opengl32   # ImGui GL2 backend + atc_ui
+        Ws2_32     # sockets for curl
+        Crypt32    # Schannel TLS certificate store (static curl)
+        Bcrypt     # CNG SHA256 (model_manifest) + curl RNG
+        Advapi32   # Credential Manager (keychain)
+        Ole32      # WASAPI / COM (audio_input_wasapi)
+        User32     # clipboard_win
+        Psapi      # resident_bytes (GetProcessMemoryInfo)
+    )
 endif()
 
 # ── CLI Executable (ohne X-Plane) ────────────────────────────────────────────

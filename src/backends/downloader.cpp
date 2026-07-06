@@ -28,6 +28,17 @@
 #include <thread>
 #include <unordered_set>
 
+// MSVC's <sys/stat.h> ships struct stat + stat() but not the POSIX
+// S_ISREG/S_ISDIR test macros; provide them from the _S_IF* bits.
+#if defined(_WIN32)
+#ifndef S_ISREG
+#define S_ISREG(m) (((m) & _S_IFMT) == _S_IFREG)
+#endif
+#ifndef S_ISDIR
+#define S_ISDIR(m) (((m) & _S_IFMT) == _S_IFDIR)
+#endif
+#endif
+
 namespace backends::downloader {
 
 namespace {

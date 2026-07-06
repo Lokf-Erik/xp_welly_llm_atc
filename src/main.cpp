@@ -154,7 +154,10 @@ PLUGIN_API int XPluginStart(char *name, char *sig, char *desc) {
       sys = "/" + posix;
     }
 #endif
-    if (!sys.empty() && sys.back() != '/')
+    // Ensure exactly one trailing separator. XPLMGetSystemPath returns a
+    // trailing backslash on Windows (native paths), a slash on mac/Linux;
+    // accept either so we don't produce a "\/" double separator.
+    if (!sys.empty() && sys.back() != '/' && sys.back() != '\\')
       sys += '/';
     airspace_db::init(sys + "Custom Data/1200 atc data/Earth nav data/atc.dat");
     openair_db::init(sys + "Custom Data/airspaces/airspace.txt");
