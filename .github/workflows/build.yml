@@ -12,11 +12,18 @@ on:
   # without needing a PR or a release tag.
   workflow_dispatch:
 
-# CI builds cloud-only on every platform (XPWELLYS_USE_LOCAL_INFERENCE=OFF):
-# the whisper.cpp / llama.cpp / Piper trees are neither fetched nor compiled,
-# which cuts a ~50-min build to a few minutes. Released binaries therefore
-# ship OpenAI + Mistral cloud backends only; local (offline) inference is a
-# build-from-source option (`make build`), not part of the CI artifacts.
+# PR / dispatch builds are cloud-only on every platform
+# (XPWELLYS_USE_LOCAL_INFERENCE=OFF): the whisper.cpp / llama.cpp / Piper trees
+# are neither fetched nor compiled, which cuts a ~50-min build to a few minutes.
+#
+# TAG (release) builds are cloud-only for Windows, Linux and macOS-Intel
+# (x86_64), but the macOS Apple Silicon (arm64) slice is built WITH local
+# inference so the download release keeps offline STT/LM/TTS on the only
+# platform that supports it. The universal macOS .xpl carries an arm64 slice
+# (whisper + llama + Piper + cloud) and an x86_64 slice (cloud-only); Intel
+# Macs load the x86_64 slice and never touch the arm64-only dylibs.
+# Local inference remains a build-from-source option (`make build`) on other
+# platforms.
 
 jobs:
   # ── Test gate (runs once) ───────────────────────────────────────────────
@@ -52,23 +59,38 @@ jobs:
       - name: Run tests (unit + scenarios)
         run: make test
 
-  # ── macOS slice (universal, cloud-only) ─────────────────────────────────
-  # PR / dispatch: fast arm64 compile check. Tag: universal arm64+x86_64
-  # cloud-only .xpl (runs on both Apple Silicon and Intel Macs), staged for
-  # the package job. No local-inference dylibs, no espeak-ng-data.
+  # ── macOS slice (universal) ─────────────────────────────────────────────
+  # PR / dispatch: fast arm64 cloud-only compile check (no submodules). Tag:
+  # universal arm64+x86_64 .xpl staged for the package job — the arm64 slice
+  # is built WITH local inference (whisper + llama + Piper), the x86_64 slice
+  # cloud-only. On tag, the local dylibs + espeak-ng-data are staged too.
   build-macos:
     needs: test
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
 
+      # Local inference needs the whisper.cpp / llama.cpp / Piper submodules.
+      # Only tag builds compile them, so only tag builds fetch them — PR /
+      # dispatch stay submodule-free and fast.
+      - name: Fetch submodules (tag builds only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          git submodule update --init --recursive
+
       - name: Setup dependencies (cloud-only — no submodules)
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         run: make setup-cloud
+
+      - name: Setup dependencies (with local-inference submodules)
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: make setup
 
       - name: Set up ccache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
-          key: ${{ runner.os }}-${{ github.job }}
+          key: ${{ runner.os }}-${{ github.job }}-${{ startsWith(github.ref, 'refs/tags/v') && 'release' || 'debug' }}
           max-size: 1500M
           variant: ccache
 
@@ -84,24 +106,16 @@ jobs:
           cmake --build build-mac-fast --parallel --target xp_wellys_atc
           ccache --show-stats
 
-      - name: Build (universal, cloud-only)
-        # Release tags: build both arches cloud-only and lipo them into one
-        # universal .xpl. Both slices are fast (libcurl + frameworks only).
+      - name: Build (universal — arm64 local + x86_64 cloud)
+        # Release tags: `make build` configures twice — arm64 with
+        # XPWELLYS_USE_LOCAL_INFERENCE=ON (whisper + llama + Piper + cloud) and
+        # x86_64 with it OFF (cloud-only) — then lipo's them into one universal
+        # build/xp_wellys_atc.xpl and stages libpiper.dylib +
+        # libonnxruntime.*.dylib + espeak_ng-install/ next to it. -DRELEASE=ON
+        # bakes VERSION.txt into both slices.
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
-          set -euo pipefail
-          for arch in arm64 x86_64; do
-            cmake -B "build-$arch" -DCMAKE_BUILD_TYPE=Release \
-              -DCMAKE_OSX_ARCHITECTURES="$arch" \
-              -DXPWELLYS_USE_LOCAL_INFERENCE=OFF \
-              -DBUILD_TESTS=OFF -Wno-dev
-            cmake --build "build-$arch" --parallel --target xp_wellys_atc
-          done
-          mkdir -p build
-          lipo -create \
-            build-arm64/xp_wellys_atc.xpl \
-            build-x86_64/xp_wellys_atc.xpl \
-            -output build/xp_wellys_atc.xpl
+          make build RELEASE_FLAG="-DRELEASE=ON"
           lipo -info build/xp_wellys_atc.xpl
           ccache --show-stats
 
@@ -111,10 +125,31 @@ jobs:
           set -euo pipefail
           STAGE=dist/macos
           mkdir -p "$STAGE/mac_x64"
-          cp build/xp_wellys_atc.xpl "$STAGE/mac_x64/"
-          # Cloud-only: no bundled dylibs to resolve, so just ad-hoc codesign
-          # the self-contained .xpl (Gatekeeper still wants a signature).
-          codesign --force --sign - "$STAGE/mac_x64/xp_wellys_atc.xpl"
+          mkdir -p "$STAGE/Resources/espeak-ng-data"
+
+          # The arm64 slice resolves libpiper / libonnxruntime via @loader_path;
+          # they are arm64-only and untouched by the x86_64 (cloud-only) slice
+          # on Intel Macs.
+          cp build/xp_wellys_atc.xpl           "$STAGE/mac_x64/"
+          cp build/libpiper.dylib              "$STAGE/mac_x64/"
+          cp build/libonnxruntime.1.22.0.dylib "$STAGE/mac_x64/"
+          cp build/libonnxruntime.dylib        "$STAGE/mac_x64/"
+
+          for rp in $(otool -l "$STAGE/mac_x64/xp_wellys_atc.xpl" \
+                      | awk '/LC_RPATH/{flag=1; next} flag && /path/ {print $2; flag=0}'); do
+            install_name_tool -delete_rpath "$rp" "$STAGE/mac_x64/xp_wellys_atc.xpl" 2>/dev/null || true
+          done
+          install_name_tool -add_rpath "@loader_path" "$STAGE/mac_x64/xp_wellys_atc.xpl"
+
+          codesign --force --deep --sign - "$STAGE/mac_x64/libonnxruntime.1.22.0.dylib"
+          codesign --force --deep --sign - "$STAGE/mac_x64/libpiper.dylib"
+          codesign --force --deep --sign - "$STAGE/mac_x64/xp_wellys_atc.xpl"
+
+          # espeak-ng-data is plain phoneme/dictionary data — identical on every
+          # platform, so the single combined bundle carries one copy (from here).
+          rsync -a --delete \
+            build/espeak_ng-install/share/espeak-ng-data/ \
+            "$STAGE/Resources/espeak-ng-data/"
 
       - name: Upload macOS slice
         if: startsWith(github.ref, 'refs/tags/v')
@@ -320,12 +355,19 @@ jobs:
           set -euo pipefail
           STAGE=dist/xp_wellys_atc
           mkdir -p "$STAGE/data/vrps"
+          mkdir -p "$STAGE/Resources/models"
 
           # Platform slices (X-Plane auto-loads the matching one at runtime).
-          # Cloud-only: each is a single self-contained .xpl, no dylibs/.so.
+          # mac_x64 carries the arm64 local-inference dylibs (libpiper +
+          # libonnxruntime); lin_x64 and win_x64 are self-contained cloud-only
+          # .xpl files with no dylibs/.so.
           cp -R slice-macos/mac_x64   "$STAGE/"
           cp -R slice-linux/lin_x64   "$STAGE/"
           cp -R slice-windows/win_x64 "$STAGE/"
+
+          # Shared, platform-independent espeak-ng-data (from the macOS slice) —
+          # backs Piper TTS in local mode on Apple Silicon.
+          cp -R slice-macos/Resources/espeak-ng-data "$STAGE/Resources/"
 
           # Shared data + docs straight from the repo.
           cp data/atc_prompt_templates.json "$STAGE/data/"
@@ -358,9 +400,10 @@ jobs:
         # Force-push the staged plugin tree to the `release` branch that the
         # skunkcrafts_updater.cfg `module` URL serves via raw.githubusercontent.
         # Single orphan commit each release => the branch never accumulates
-        # history (binaries don't bloat the repo over time). Cloud-only bundle,
-        # so nothing large to strip first. Requires repo Settings -> Actions ->
-        # Workflow permissions -> "Read and write permissions".
+        # history (binaries don't bloat the repo over time). The bundle carries
+        # the arm64 local-inference dylibs + espeak-ng-data (~50 MB), so in-sim
+        # SkunkCrafts updates download that too. Requires repo Settings ->
+        # Actions -> Workflow permissions -> "Read and write permissions".
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
