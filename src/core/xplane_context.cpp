@@ -127,6 +127,10 @@ __attribute__((weak)) std::string nearest_taxiway_phrase(const std::string &,
                                                          double, double) {
   return "to the apron";
 }
+__attribute__((weak)) std::pair<double, double>
+airport_pos_for(const std::string &) {
+  return {0.0, 0.0};
+}
 #endif
 
 } // namespace xplane_context
