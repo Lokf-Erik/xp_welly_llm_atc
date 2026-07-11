@@ -271,6 +271,8 @@ const char *state_name(ATCState state) {
     return "IFR/ENROUTE_CRUISE";
   case ATCState::IFR_DESCENT:
     return "IFR/DESCENT";
+  case ATCState::IFR_ARRIVAL:
+    return "IFR/ARRIVAL";
   case ATCState::IFR_APPROACH_CONTACT:
     return "IFR/APPROACH_CONTACT";
   case ATCState::IFR_APPROACH_DESCENT:
@@ -325,6 +327,8 @@ ATCState state_from_name(const std::string &name) {
       {"IFR_ENROUTE_CRUISE", ATCState::IFR_ENROUTE_CRUISE},
       {"IFR/DESCENT", ATCState::IFR_DESCENT},
       {"IFR_DESCENT", ATCState::IFR_DESCENT},
+      {"IFR/ARRIVAL", ATCState::IFR_ARRIVAL},
+      {"IFR_ARRIVAL", ATCState::IFR_ARRIVAL},
       {"IFR/APPROACH_CONTACT", ATCState::IFR_APPROACH_CONTACT},
       {"IFR_APPROACH_CONTACT", ATCState::IFR_APPROACH_CONTACT},
       {"IFR/APPROACH_DESCENT", ATCState::IFR_APPROACH_DESCENT},

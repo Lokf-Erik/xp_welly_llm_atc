@@ -60,7 +60,9 @@ enum class ATCState {
                       // climbs
   IFR_ENROUTE_CRUISE, // on Centre frequency; ATC issues direct-to, then descent
                       // + handoff
-  IFR_DESCENT,        // descent clearance issued; awaiting TMA entry + Approach handoff
+  IFR_DESCENT,        // descent clearance issued; still under ACC, descending toward the STAR
+  IFR_ARRIVAL,        // crossed the first STAR fix (IAF for no-STAR); flying the arrival under
+                      // ACC/arrival; STAR step-downs issued here; awaiting the real Approach handoff
   IFR_APPROACH_CONTACT, // Centre handed off to Approach; pilot has not yet
                         // called
   IFR_APPROACH_DESCENT,  // Approach monitoring STAR step-down constraints

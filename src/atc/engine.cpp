@@ -3825,14 +3825,55 @@ static bool build_approach_handoff(const xplane_context::XPlaneContext &ctx,
     }
   }
 
-  // P3 (atc.dat TRACON near destination) intentionally removed: it would pick
-  // up any nearby TRACON regardless of whether it serves the destination, e.g.
-  // returning "Paris Approach" for LFQA (non-controlled AFIS airport in Paris
-  // FIR). When P1 and P2 both fail the destination has no dedicated Approach
-  // controller; the caller's silent-transition path handles that case, and
-  // poll_approach() issues the local INFO/AFIS handoff at FAF.
+  // Fallback 3 (arrival): atc.dat TRACON whose polygon ENCLOSES the destination
+  // airport. Stricter than the departure P3's find_by_role_near (nearest): the
+  // TRACON must actually contain the destination, so a STAR field with a
+  // delegated approach (LFLP -> Geneva/Chambery) resolves, while a
+  // non-controlled AFIS field that sits inside no Approach TRACON polygon
+  // (LFQA) correctly finds nothing and falls through to the silent path.
+  // The enclosure filter is what makes restoring P3 safe -- the old P3 was
+  // removed precisely because "nearest" returned Paris Approach for LFQA
+  // (see project_p3_tracon_removal). Queried at the DESTINATION position, so
+  // it is immune to the aircraft-nearest drift that also blocks P2.
+  if (app_label.empty() && !s_assigned_dest_icao.empty() &&
+      airspace_db::enabled()) {
+    auto dpos = xplane_context::airport_pos_for(s_assigned_dest_icao);
+    if (dpos.first != 0.0 || dpos.second != 0.0) {
+      // Probe at a representative low TMA/approach altitude (MSL). EU TMA
+      // floors are typically a few thousand feet; 6000 ft sits inside the low
+      // band while staying above most field elevations.
+      constexpr float kApproachProbeFtMsl = 6000.0f;
+      auto enc_ctrls = airspace_db::find_enclosing(dpos.first, dpos.second,
+                                                   kApproachProbeFtMsl);
+      const airspace_db::Controller *best = nullptr;
+      for (const auto *c : enc_ctrls) {
+        if (!c || c->freqs_khz.empty())
+          continue;
+        if (c->role != airspace_db::ControllerRole::TRACON)
+          continue;
+        // Highest floor = tightest/most-local sector (same rule as
+        // sector_picker's forward-handoff preference).
+        if (!best || c->floor_ft > best->floor_ft)
+          best = c;
+      }
+      if (best) {
+        app_freq = static_cast<float>(best->freqs_khz.front()) / 1000.0f;
+        app_label = controller_label_for(best) + " Approach";
+        logging::info(
+            "IFR arrival handoff: [P3-atc.dat encloses dest %s @%.4f,%.4f] "
+            "TRACON '%s' -> %s %.3f",
+            s_assigned_dest_icao.c_str(), dpos.first, dpos.second,
+            best->name.c_str(), app_label.c_str(), app_freq);
+      } else {
+        logging::info(
+            "IFR arrival handoff: [P3-atc.dat] no TRACON encloses dest %s",
+            s_assigned_dest_icao.c_str());
+      }
+    }
+  }
+
   if (app_label.empty()) {
-    logging::info("IFR arrival handoff: no Approach controller (P1+P2 failed) -- silent");
+    logging::info("IFR arrival handoff: no Approach controller (P1+P2+P3 failed) -- silent");
     return false;
   }
 
