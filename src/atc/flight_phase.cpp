@@ -158,13 +158,19 @@ static void merge_into(nlohmann::json &base, const nlohmann::json &overlay) {
   for (auto &[key, val] : overlay.items()) {
     if (key.rfind("_comment", 0) == 0)
       continue;
-    if (!base.contains(key)) {
-      base[key] = val;
-    } else if (base[key].is_object() && val.is_object()) {
+    if (key.rfind("_note", 0) == 0)
+      continue;
+    if (base.contains(key) && base[key].is_object() && val.is_object()) {
       merge_into(base[key], val);
-    } else if (base[key].is_array() && val.is_array()) {
+    } else if (base.contains(key) && base[key].is_array() && val.is_array()) {
       for (auto &item : val)
         base[key].push_back(item);
+    } else {
+      // Key absent, OR scalar leaf (string/number/bool): overlay replaces
+      // base. The scalar-override case is required so IFR overrides of
+      // VFR-inherited fields (e.g. intent_frequency.READY_FOR_DEPARTURE.
+      // rejection) actually take effect instead of the base value winning.
+      base[key] = val;
     }
   }
 }

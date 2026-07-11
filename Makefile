@@ -37,10 +37,13 @@ CATCH2_VERSION := 3.7.1
 # wouldn't even compile on the current host. Without this the macOS lint
 # run trips over pulse/error.h (PulseAudio headers absent), and the Linux
 # lint run would trip over CoreAudio headers.
+# Windows-only TUs (WASAPI audio, Win32 clipboard) include <windows.h> and
+# never compile off Windows — exclude on both macOS and Linux lint runs.
+LINT_EXCLUDE_WIN := src/audio/audio_input_wasapi.cpp src/ui/clipboard_win.cpp
 ifeq ($(OS),Darwin)
-LINT_EXCLUDE := src/audio/audio_input_pulseaudio.cpp src/audio/mic_permission_linux.cpp src/ui/clipboard_linux.cpp
+LINT_EXCLUDE := $(LINT_EXCLUDE_WIN) src/audio/audio_input_pulseaudio.cpp src/audio/mic_permission_linux.cpp src/ui/clipboard_linux.cpp
 else
-LINT_EXCLUDE := src/audio/audio_input_coreaudio.cpp
+LINT_EXCLUDE := $(LINT_EXCLUDE_WIN) src/audio/audio_input_coreaudio.cpp
 endif
 LINT_SOURCES := $(filter-out $(LINT_EXCLUDE),$(wildcard src/main.cpp src/*/*.cpp))
 
@@ -421,10 +424,12 @@ else
     DIST_PLATFORM := linux
     DIST_EXT      := tar.gz
 endif
-# Build counter: increments each time package is run on the same commit,
-# so successive dev builds on the same hash get -1, -2, -3, ...
+# Build counter: monotonic across ALL packages for this platform+version
+# (any git hash), computed as max(existing trailing -N) + 1 — NOT a file
+# count. This survives manual renames (e.g. -23) and new commits: the next
+# build after -23 is always -24, never a reset to -2.
 _DIST_BASE    := xp_wellys_atc-$(DIST_PLATFORM)-$(DIST_VERSION)-$(DIST_GIT_HASH)
-DIST_BUILD_N  := $(shell n=$$(ls dist/$(_DIST_BASE)-*.$(DIST_EXT) 2>/dev/null | wc -l); echo $$((n + 1)))
+DIST_BUILD_N  := $(shell m=$$(for f in dist/xp_wellys_atc-$(DIST_PLATFORM)-$(DIST_VERSION)-*.$(DIST_EXT); do [ -e "$$f" ] || continue; b=$${f%.$(DIST_EXT)}; echo $${b##*-}; done | sort -n | tail -1); echo $$(( $${m:-0} + 1 )))
 DIST_NAME     := $(_DIST_BASE)-$(DIST_BUILD_N)
 DIST_STAGE    := dist/$(DIST_NAME)/xp_wellys_atc
 

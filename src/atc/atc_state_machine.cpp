@@ -323,6 +323,8 @@ ATCState state_from_name(const std::string &name) {
       {"IFR_RADAR_CONTACT", ATCState::IFR_RADAR_CONTACT},
       {"IFR/ENROUTE_CRUISE", ATCState::IFR_ENROUTE_CRUISE},
       {"IFR_ENROUTE_CRUISE", ATCState::IFR_ENROUTE_CRUISE},
+      {"IFR/DESCENT", ATCState::IFR_DESCENT},
+      {"IFR_DESCENT", ATCState::IFR_DESCENT},
       {"IFR/APPROACH_CONTACT", ATCState::IFR_APPROACH_CONTACT},
       {"IFR_APPROACH_CONTACT", ATCState::IFR_APPROACH_CONTACT},
       {"IFR/APPROACH_DESCENT", ATCState::IFR_APPROACH_DESCENT},
@@ -661,6 +663,12 @@ std::string consume_readback_reminder(double now_secs) {
 bool was_airborne() { return g_state.was_airborne_; }
 
 void set_was_airborne(bool v) { internal::set_was_airborne(v); }
+
+// Public wrapper for the training-jump entry points (engine::training_jump_*)
+// to lock the session callsign; the implementation lives in internal.
+void set_session_callsign(const std::string &cs) {
+  internal::set_session_callsign(cs);
+}
 
 void set_state(ATCState state) {
   internal::transition_to(state, "external_set_state");
@@ -1078,6 +1086,21 @@ void check_auto_correction(flight_phase::FlightPhase phase, float dt,
         break;
       }
     }
+
+    // An "on_airborne" correction must never fire while the matched phase
+    // is still a GROUND phase. TAXI_CLEARED/GROUND_CONTACT list TAKEOFF_ROLL
+    // under on_airborne to catch a pilot departing without calling Tower,
+    // but TAKEOFF_ROLL is a ground phase (is_on_ground==true) and a fast
+    // taxi or runway backtrack trips it without the aircraft ever leaving
+    // the ground. That was wiping TAXI_CLEARED -> IDLE mid-taxi (LIMF
+    // 2026-07-09: holding-point call then rejected with "say again your
+    // request"). A real takeoff roll transitions to CLIMB (also listed)
+    // within seconds, so the legitimate revert still fires once the
+    // aircraft is genuinely airborne — we only defer it past the ground
+    // phase, never lose it.
+    if (matches && cond_name == "on_airborne" &&
+        flight_phase::is_on_ground(phase))
+      matches = false;
 
     if (matches) {
       // The legacy CROSS_COUNTRY suppression hack (skip Pattern

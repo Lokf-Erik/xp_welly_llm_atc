@@ -231,7 +231,12 @@ static const std::unordered_map<std::string, std::string> kWordAliases = {
     {"rome", "romeo"},
     // Approach type — Voxtral mishearings:
     {"r9",    "rnav"}, // "R9 approach" → "RNAV approach"
+    {"r90",   "rnav"}, // "R90 approach" → "RNAV" (Voxtral: RNAV + spurious trailing 0)
+    {"r9z",   "rnav zulu"},   // "R9Z approach" → "RNAV Zulu" (RNAV+variant fused)
+    {"r9y",   "rnav yankee"}, // "R9Y approach" → "RNAV Yankee"
+    {"r9x",   "rnav x-ray"},  // "R9X approach" → "RNAV X-ray"
     {"armad", "rnav"}, // "armad approach" → "RNAV approach"
+    {"armor", "rnav"}, // "armor Zulu approach" → "RNAV" (Voxtral garble)
     {"arnal", "rnav"}, // "arnal approach" → "RNAV approach" (Voxtral: /v/→/l/)
     {"rmp",   "rnp"},  // "RMP approach" → "RNP approach"
     {"t7", "descent"}, // Voxtral: "T7" for "descent" in readbacks
@@ -265,6 +270,16 @@ static const std::vector<std::pair<std::string, std::string>> kPhraseAliases = {
     {"arm of",            "rnav"},          // Voxtral: "arm of 07" → "RNAV 07"
     {"r nav",             "rnav"},          // Voxtral output when biased with "R NAV"
     {"r-nav",             "rnav"},          // Voxtral output when biased with "R-NAV"
+    {"on nav",            "rnav"},          // Voxtral: "expect on nav Zulu" → "RNAV"
+    // Voxtral mishears "descend/descent" as "the centre" before "flight level"
+    // in a descent readback ("the centre flight level 140" -> "descend flight
+    // level 140"). Phrase-scoped so the real word "centre" (Area Control
+    // Centre) is never touched. Both spellings covered.
+    {"the centre flight level", "descend flight level"},
+    {"the center flight level", "descend flight level"},
+    // Voxtral mishears "runway" as "one way" (e.g. "one way 04 vacated" ->
+    // "runway 04 vacated"). "one way" is not ATC phraseology so safe to alias.
+    {"one way", "runway"},
     // Voxtral mishears "two" as "to" in frequencies — anchor with "decimal"
     // so "one to one decimal" = 121.xxx is fixed without corrupting callsigns
     // like "November One One One" which would match "one to one" without anchor.

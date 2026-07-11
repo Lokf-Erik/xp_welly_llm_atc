@@ -43,6 +43,8 @@ add_executable(xp_wellys_atc_tests
     test_openai_common.cpp
     test_audit_logging.cpp
     test_model_manifest.cpp
+    test_simbrief_ofp.cpp
+    test_sector_picker.cpp
 )
 
 target_include_directories(xp_wellys_atc_tests PRIVATE

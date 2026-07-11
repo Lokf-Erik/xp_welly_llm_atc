@@ -26,3 +26,7 @@ Makefile.cmake
 
 # Local inference models — downloaded via setup, never committed (see milestone 02–04)
 Resources/models/
+
+# stray/aux dirs (not part of the plugin)
+build-pr/
+/memory/

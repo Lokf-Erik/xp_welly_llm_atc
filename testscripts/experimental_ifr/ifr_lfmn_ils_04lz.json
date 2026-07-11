@@ -1,0 +1,47 @@
+{
+  "_comment": "IFR approach — LFMN ILS 04LZ. Approach-only scenario starting at IFR/APPROACH_TOWER (Approach has already issued 'contact Tower, report established ILS 04L'). Verifies that 'established ILS' parses as INITIAL_CALL_TOWER and produces a landing clearance. Regular airport (separate Ground 121.750): runway vacated triggers Ground freq handoff. LFMN APP 120.025 / TWR 118.700 / GND 121.750.",
+  "name": "IFR approach — LFMN ILS 04LZ",
+  "region": "EU",
+  "context": {
+    "airport": "LFMN",
+    "airport_name": "NICE COTE D AZUR",
+    "towered": true,
+    "tower_only": false,
+    "no_atis": false,
+    "on_ground": false,
+    "com": 118.700,
+    "freq_type": "TOWER",
+    "runway": "04L",
+    "altitude_ft": 1800,
+    "agl_ft": 1787,
+    "groundspeed_kt": 145,
+    "heading": 40,
+    "lat": 43.690,
+    "lon": 7.250,
+    "airport_lat": 43.6584,
+    "airport_lon": 7.2158,
+    "callsign": "Fox Golf Bravo Charlie Delta",
+    "ifr_destination": "LFMN",
+    "freqs": [
+      { "mhz": 120.025, "type": "APPROACH", "name": "NICE APP" },
+      { "mhz": 118.700, "type": "TOWER",    "name": "NICE TWR" },
+      { "mhz": 121.750, "type": "GROUND",   "name": "NICE GND" }
+    ]
+  },
+  "say": [
+    { "note": "0 — Approach has handed off: 'contact Tower, report established ILS 04L'. Jump to IFR/APPROACH_TOWER.",
+      "set_state": "IFR/APPROACH_TOWER" },
+
+    { "note": "1 — Pilot reports established ILS. Expect landing clearance (INITIAL_CALL_TOWER -> IFR/APPROACH_TOWER template).",
+      "text": "Nice Tower Fox Golf Bravo Charlie Delta established ILS runway zero four left",
+      "expect": "cleared to land",
+      "expect_state": "IFR/LANDING_CLEARED" },
+
+    { "set": { "on_ground": true, "agl_ft": 0, "altitude_ft": 13, "groundspeed_kt": 8 } },
+
+    { "note": "2 — Runway vacated. Regular airport: expect 'contact Ground on 121.750, good day'.",
+      "text": "Fox Golf Bravo Charlie Delta runway vacated",
+      "expect": "ground",
+      "expect_state": "IDLE" }
+  ]
+}

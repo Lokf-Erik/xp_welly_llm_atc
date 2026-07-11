@@ -150,6 +150,12 @@ ApproachInfo approach_by_designator(const std::string &cifp_dir,
                                      const std::string &icao,
                                      const std::string &designator);
 
+// Extract the trailing variant letter from an approach designator.
+// Examples: "I04LZ" -> 'Z', "R04-Y" -> 'Y', "I04L" -> 0 (no variant).
+// Handles dash separator emitted by some AIRAC vendors (e.g. LFLP:R04-Y).
+// Returns 0 when no variant letter is present.
+char approach_suffix(const std::string &designator);
+
 // When the STAR serves ALL runways, pick the best approach runway.
 // Scores each runway by: approach type priority > headwind alignment > L over R.
 // wind_dir_true: meteorological wind direction in degrees true (-1 = unknown).

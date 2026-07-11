@@ -181,6 +181,13 @@ void set_assigned_runway(const std::string &rwy);
 // can hijack the tower's salutation mid-session.
 const std::string &session_callsign();
 
+// Explicitly lock the session callsign. Used by the training-jump entry
+// points (engine::training_jump_*) which bypass the normal initial-call
+// flow that would otherwise lock it — without this the callsign stays
+// empty and the first mid-flight transcript that yields a callsign token
+// (e.g. an RNAV IAF ident "LP403" -> "Lima Papa 403") gets locked instead.
+void set_session_callsign(const std::string &cs);
+
 // Returns assigned_runway() if non-empty, else ctx.active_runway. Use this
 // for any "what runway are we operating to" question outside the spoken
 // ATC response itself (UI hints, ATIS, STT bias, phase detection).

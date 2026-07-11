@@ -465,6 +465,32 @@ std::map<std::string, std::string> build_vars(const PilotMessage &msg,
           std::snprintf(buf, sizeof(buf), "FL%d", fl);
           return buf;
         };
+        // Handoff continuity: if the pilot already has an active cleared
+        // altitude (initial radar-contact clearance, SID step-up, en-route
+        // step-up), reuse it — the new controller must NOT issue a
+        // contradictory clearance on check-in. Real ATC preserves the
+        // previous sector's clearance. See
+        // feedback_handoff_clearance_continuity. Concrete regression this
+        // fixes: LIMF -> Milan intermediate handoff during SID climb.
+        // Pilot cleared to FL210 by initial reply; Milan check-in produced
+        // "climb FL80" because nearest_airport had drifted to LIVV
+        // (a small field) and the phase-default computation reset to
+        // (init=5000 + sid_min=11000)/2 = 8000 = FL80 — a reversal of
+        // the pilot's climb clearance. Fix: use the current cleared
+        // altitude when set; only fall through to phase-default on the
+        // very first radar contact (before any climb clearance).
+        const int current_cleared_ft = engine::current_cleared_alt_ft();
+        if (current_cleared_ft > 0) {
+          const int ta = ctx.transition_alt_ft > 0 ? ctx.transition_alt_ft
+                                                   : 5000;
+          char buf[16];
+          if (current_cleared_ft >= ta)
+            std::snprintf(buf, sizeof(buf), "FL%d",
+                          current_cleared_ft / 100);
+          else
+            std::snprintf(buf, sizeof(buf), "%d feet", current_cleared_ft);
+          return buf;
+        }
         if (ctx.nearest_airport_id == "LFLP") {
           if (ctx.active_runway == "04") {
             const std::string &fix = ctx.ifr_sid_last_fix.empty()
@@ -485,7 +511,24 @@ std::map<std::string, std::string> build_vars(const PilotMessage &msg,
                           ? ctx.ifr_sid_min_alt_ft
                           : init_ft + 6000;
         int mid_ft = (init_ft + sid_min) / 2;
-        return fl_str(((mid_ft + 999) / 1000) * 10);
+        int computed_fl = ((mid_ft + 999) / 1000) * 10;
+        // Never issue a climb to an altitude the aircraft has already
+        // climbed past. After a mid-climb handoff + check-in the state
+        // ping-pongs (RADAR_CONTACT -> EN_ROUTE -> RADAR_CONTACT), which
+        // zeroes the cleared-altitude statics, so current_cleared_alt_ft()
+        // returned 0 above and we fell through to this phase-default
+        // midpoint. On a genuine first radar contact the aircraft is low
+        // and computed_fl sits above it (fine). On a re-check-in it sits
+        // BELOW the aircraft (e.g. FL80 while climbing through FL156 to
+        // filed cruise FL220 -- LIMF -> LFLP 2026-07-09 "climb FL80"),
+        // which reads as a descent. In that case fall back to the filed
+        // cruise FL, the pilot's actual target. fl_str still caps at cruise.
+        if (ctx.ifr_cruise_alt_ft > 0) {
+          const int cur_fl = static_cast<int>(ctx.pressure_alt_ft) / 100;
+          if (computed_fl < cur_fl)
+            return fl_str(ctx.ifr_cruise_alt_ft / 100);
+        }
+        return fl_str(computed_fl);
       }()},
       // {ifr_departure_constraint}: optional departure constraint phrase inserted
       // after {ifr_initial_altitude} in the clearance template.
@@ -645,11 +688,26 @@ std::map<std::string, std::string> build_vars(const PilotMessage &msg,
         // Cache the departure label so poll_departure_handoff() can activate
         // it later — even if the nearest airport changes en-route and loses
         // its apt.dat frequency entry by then.
-        // Guard: only cache when generating a real ATC response, not when
+        // Guard 1: only cache when generating a real ATC response, not when
         // build_vars is called from the UI hints panel (every frame).
+        // Guard 2: do NOT overwrite an existing pending handoff to a
+        // DIFFERENT frequency. build_vars() evaluates every template lambda
+        // eagerly, so this side effect fires even when the plugin is
+        // rendering an airborne readback response that has nothing to do
+        // with departure freq caching. Without guard 2, an airborne pilot's
+        // readback on the OLD Approach freq would clobber a more-recent
+        // intermediate handoff (Phase 2.8 Milan 118.675 -> back to Torino
+        // 121.100), then the pilot's check-in on the new freq gets rejected
+        // by the wrong-freq guard. LIMF->LFLP 2026-07-07 in-sim regression.
         if (apply_side_effects) {
-          engine::set_pending_departure_label(facility_name);
-          engine::set_pending_handoff_freq(freq);
+          const float existing = engine::pending_handoff_freq();
+          const bool safe_to_cache =
+              existing < 100.0f ||                     // uninitialised
+              std::fabs(existing - freq) < 0.005f;     // same freq — idempotent
+          if (safe_to_cache) {
+            engine::set_pending_departure_label(facility_name);
+            engine::set_pending_handoff_freq(freq);
+          }
         }
         char buf[128];
         std::snprintf(buf, sizeof(buf), ", QNH %d, contact %s on %.3f",
@@ -1047,6 +1105,7 @@ bool check_freq_precondition(const PilotMessage &msg, const XPlaneContext &ctx,
   {
     const std::string s = atc_state_machine::state_name(internal::get_state_ref());
     if (s == "IFR/RADAR_CONTACT"    || s == "IFR/ENROUTE_CRUISE" ||
+        s == "IFR/EN_ROUTE"         || s == "IFR/DESCENT"         ||
         s == "IFR/FREQ_HANDOFF"     || s == "IFR/APPROACH_CONTACT" ||
         s == "IFR/APPROACH_DESCENT" || s == "IFR/APPROACH_TOWER"  ||
         s == "IFR/LANDING_CLEARED")

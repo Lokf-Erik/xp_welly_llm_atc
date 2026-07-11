@@ -40,6 +40,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <ctime>
 #include <functional>
 #include <sstream>
 #include <string>
@@ -280,6 +281,86 @@ static std::string expand_runways(std::string s) {
   return s;
 }
 
+// Flight-level digit expansion for TTS. ICAO Annex 10 / Doc 4444 (and
+// EUROCONTROL, UK CAP413, FAA identically): flight levels are spoken
+// DIGIT BY DIGIT — FL210 = "flight level two one zero", never the cardinal
+// "two hundred ten" that TTS produces from the numeral "210". Also
+// normalises the "FL210" / "FL 210" abbreviation into the spoken form.
+// Altitudes in feet are deliberately left as cardinals ("two thousand five
+// hundred feet") per ICAO, so this only rewrites the flight-level phrase.
+// Applied to the SPOKEN text only; the transcript keeps the compact "210".
+static std::string spell_digits(const std::string &num) {
+  static const char *kDigit[] = {"zero", "one", "two",   "three", "four",
+                                  "five", "six", "seven", "eight", "nine"};
+  std::string out;
+  for (char c : num) {
+    if (!std::isdigit(static_cast<unsigned char>(c)))
+      continue;
+    if (!out.empty())
+      out += ' ';
+    out += kDigit[c - '0'];
+  }
+  return out;
+}
+
+static std::string expand_flight_levels(std::string s) {
+  auto lc = [](char c) {
+    return static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  };
+  static const std::string kFl = "flight level ";
+  std::string out;
+  out.reserve(s.size() + 24);
+  size_t i = 0;
+  while (i < s.size()) {
+    bool matched = false;
+
+    // Pattern A: "flight level <digits>" (case-insensitive phrase).
+    if (i + kFl.size() <= s.size()) {
+      bool eq = true;
+      for (size_t k = 0; k < kFl.size(); ++k)
+        if (lc(s[i + k]) != kFl[k]) { eq = false; break; }
+      if (eq) {
+        size_t d = i + kFl.size(), e = d;
+        while (e < s.size() && std::isdigit(static_cast<unsigned char>(s[e])))
+          ++e;
+        if (e > d) {
+          out += s.substr(i, kFl.size());      // keep original "flight level "
+          out += spell_digits(s.substr(d, e - d));
+          i = e;
+          matched = true;
+        }
+      }
+    }
+
+    // Pattern B: "FL<digits>" / "FL <digits>" abbreviation at a word start.
+    if (!matched && (s[i] == 'F' || s[i] == 'f') && i + 1 < s.size() &&
+        (s[i + 1] == 'L' || s[i + 1] == 'l')) {
+      bool left_ok =
+          (i == 0) || !std::isalnum(static_cast<unsigned char>(s[i - 1]));
+      if (left_ok) {
+        size_t d = i + 2;
+        if (d < s.size() && s[d] == ' ')
+          ++d;
+        size_t e = d;
+        while (e < s.size() && std::isdigit(static_cast<unsigned char>(s[e])))
+          ++e;
+        if (e > d) {
+          out += "flight level ";
+          out += spell_digits(s.substr(d, e - d));
+          i = e;
+          matched = true;
+        }
+      }
+    }
+
+    if (!matched) {
+      out += s[i];
+      ++i;
+    }
+  }
+  return out;
+}
+
 // Speak ATC response via local TTS, then transition to PLAYING → IDLE.
 // `length_scale` > 1.0 makes Piper speak slower (used for ATIS).
 // `on_playback_starting` (optional) fires on the main thread the moment
@@ -295,7 +376,7 @@ speak_response(const std::string &text, model_manifest::VoiceRole role,
   tts_pending_ = true;
   ++total_inferences_; // TTS inference
 
-  std::string final_text = expand_navfix_names(expand_runways(text));
+  std::string final_text = expand_navfix_names(expand_runways(expand_flight_levels(text)));
 
   backends::tts::synthesize_async(
       final_text, role, length_scale,
@@ -353,7 +434,7 @@ static void speak_response_guarded(const std::string &text,
   tts_pending_ = true;
   ++total_inferences_;
 
-  std::string final_text = expand_navfix_names(expand_runways(text));
+  std::string final_text = expand_navfix_names(expand_runways(expand_flight_levels(text)));
 
   backends::tts::synthesize_async(
       final_text, role, length_scale,
@@ -501,6 +582,33 @@ void init() {
       model_paths::plugin_root() + "/Resources/transcript.log";
   g_transcript_log_ = std::fopen(log_path.c_str(), "w");
   if (g_transcript_log_) {
+    int xp_ver = 0, xplm_ver = 0;
+    XPLMHostApplicationID host = 0;
+    XPLMGetVersions(&xp_ver, &xplm_ver, &host);
+    const char *os =
+#if defined(__linux__)
+        "Linux"
+#elif defined(__APPLE__)
+        "macOS"
+#elif defined(_WIN32)
+        "Windows"
+#else
+        "Unknown"
+#endif
+        ;
+    std::time_t now = std::time(nullptr);
+    char ts[32] = {0};
+    std::strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", std::localtime(&now));
+#ifdef XP_WELLYS_ATC_VERSION
+    const char *plugin_ver = XP_WELLYS_ATC_VERSION;
+#else
+    const char *plugin_ver = "unknown";
+#endif
+    std::fprintf(g_transcript_log_,
+                 "=== Welly's ATC v%s | OS=%s | X-Plane %d | XPLM SDK %d "
+                 "| session %s ===\n",
+                 plugin_ver, os, xp_ver, xplm_ver, ts);
+    std::fflush(g_transcript_log_);
     logging::info("Transcript log: %s", log_path.c_str());
     g_last_stt_model_.clear(); // force header on first transcription
     write_stt_header_if_changed();
@@ -613,9 +721,25 @@ static void submit_recording_to_stt() {
   std::string airport_ctx = atc_templates::get_prompt("whisper_prompt");
   if (!airport_ctx.empty())
     airport_ctx += " ";
-  airport_ctx += ctx_for_whisper.nearest_airport_id;
-  if (!ctx_for_whisper.nearest_airport_name.empty())
-    airport_ctx += " " + ctx_for_whisper.nearest_airport_name;
+  // Determine whether the aircraft is airborne mid-IFR (drift-prone state)
+  // so we can prefer the assigned destination ICAO over
+  // ctx.nearest_airport_id — the latter drifts to whatever airfield is
+  // physically closest (small strips, heliports like XLF00DH Hopital de
+  // Chamonix, unrelated Approach airports like LSGG/LFLI). See
+  // feedback_nearest_airport_ifr — this is the tightest scope of that
+  // rule that fits in v4.3.1 without a wider refactor.
+  const auto ctx_state = atc_state_machine::get_state();
+  const bool airborne_ifr_drift_risk =
+      ctx_state == atc_state_machine::ATCState::IFR_RADAR_CONTACT ||
+      ctx_state == atc_state_machine::ATCState::IFR_ENROUTE_CRUISE ||
+      ctx_state == atc_state_machine::ATCState::IFR_DESCENT ||
+      ctx_state == atc_state_machine::ATCState::IFR_APPROACH_CONTACT ||
+      ctx_state == atc_state_machine::ATCState::IFR_APPROACH_DESCENT;
+  if (!airborne_ifr_drift_risk) {
+    airport_ctx += ctx_for_whisper.nearest_airport_id;
+    if (!ctx_for_whisper.nearest_airport_name.empty())
+      airport_ctx += " " + ctx_for_whisper.nearest_airport_name;
+  }
   // Aircraft registration (e.g. "N111RC", "F-HABC") from X-Plane's acf_tailnum
   // DataRef — anchors the short-form tail number the pilot uses in radio calls.
   if (!ctx_for_whisper.aircraft_tail_number.empty())
@@ -655,6 +779,17 @@ static void submit_recording_to_stt() {
                      " " + nato_words[nato_words.size() - 1];
     }
   }
+  // Arrival-ground pruning: once the aircraft has flown and is back on the
+  // ground (post-landing at the destination), the enroute route content —
+  // SID, STAR, and every navlog fix — is pure noise for a taxi/parking/
+  // vacated call. It floods the bias with ~20+ irrelevant tokens (KUKEV,
+  // BANKO, SALE3P, ...) that dilute the callsign and wreck recognition
+  // (LIMF -> LFLP 2026-07-10: "X-Ray Papa" -> "rubber power", "Annecy" ->
+  // "anti" on the ground). Skip the whole route block there. Departure
+  // ground (was_airborne()==false) keeps it — the SID + fixes matter for
+  // the clearance/taxi readback.
+  const bool arrival_ground =
+      ctx_for_whisper.on_ground && atc_state_machine::was_airborne();
   // SID, STAR, destination ICAO + name, and all FPL fix idents from SimBrief OFP.
   // Built fresh every PTT so the STAR name appears as soon as ATC assigns it.
   // Cap at 60 fixes to avoid inflating the prompt on long-haul routes.
@@ -662,26 +797,31 @@ static void submit_recording_to_stt() {
     const auto &ofp = simbrief_ofp::get();
     // Destination: ICAO code + apt.dat name so the pilot's readback is
     // recognised regardless of whether they say "LFSR" or "Reims-Prunay".
+    // (destination stays useful even on arrival ground — it's the local field.)
     if (!ofp.destination_icao.empty())
       airport_ctx += " " + ofp.destination_icao;
     if (!ctx_for_whisper.ifr_destination.empty())
       airport_ctx += " " + ctx_for_whisper.ifr_destination;
-    if (!ofp.sid_name.empty())
-      airport_ctx += " " + ofp.sid_name;
-    const std::string &star = engine::assigned_star_name();
-    if (!star.empty())
-      airport_ctx += " " + star;
-    int fix_count = 0;
-    for (const auto &fix : ofp.navlog) {
-      if (!fix.ident.empty() && fix_count < 60) {
-        airport_ctx += " " + fix.ident;
-        ++fix_count;
+    if (!arrival_ground) {
+      if (!ofp.sid_name.empty())
+        airport_ctx += " " + ofp.sid_name;
+      const std::string &star = engine::assigned_star_name();
+      if (!star.empty())
+        airport_ctx += " " + star;
+      int fix_count = 0;
+      for (const auto &fix : ofp.navlog) {
+        if (!fix.ident.empty() && fix_count < 60) {
+          airport_ctx += " " + fix.ident;
+          ++fix_count;
+        }
       }
     }
     // Destination arrival controller (Approach or Information/FIS).
     // Try TRACON first (proper Approach); fall back to CTR which is how
     // XP12 atc.dat encodes FIS/Information services (e.g. "REIMS" for LFSR).
-    if (!ofp.destination_icao.empty()) {
+    // Skipped on arrival ground — the Approach controller (Geneva/Chambery
+    // for LFLP) is stale once landed; you're on Ground/Tower now.
+    if (!arrival_ground && !ofp.destination_icao.empty()) {
       const auto dest_pos =
           xplane_context::airport_pos_for(ofp.destination_icao);
       if (dest_pos.first != 0.0 || dest_pos.second != 0.0) {
@@ -727,7 +867,14 @@ static void submit_recording_to_stt() {
   // "Marseille" → correct, "Strasbourg" → not "Strasbourg Control").
   // Use the pending label (set at takeoff clearance time) if the active
   // label has not yet been activated by poll_departure_handoff().
-  {
+  // Guard: skip during arrival/approach phase — the departure label is
+  // irrelevant late-flight noise (LIMF -> LFLP retest: "Torino" was
+  // still being added to the CTX during Chambéry Approach handoff). Also
+  // skip on arrival ground (post-landing), where the departure controller
+  // is doubly stale.
+  if (!arrival_ground &&
+      (!airborne_ifr_drift_risk ||
+       ctx_state == atc_state_machine::ATCState::IFR_RADAR_CONTACT)) {
     const std::string &dep_label = engine::current_controller_label().empty()
                                        ? engine::pending_departure_label()
                                        : engine::current_controller_label();
@@ -739,18 +886,30 @@ static void submit_recording_to_stt() {
     }
   }
 
-  // Add the pending handoff frequency and all known airport frequencies as
+  // Add the pending handoff frequency and known airport frequencies as
   // numeric tokens (e.g. "120.230").  When these are in context_bias, Voxtral
   // outputs them as digits directly ("120.230") rather than phonetic words
   // ("one to zero decimal two three zero"), making frequency readbacks reliable.
+  // Guard: during airborne IFR the airport_freqs.all iteration dumps every
+  // freq of whatever airport nearest_airport_id currently points at — for
+  // large TRACON airports like LSGG that's 14+ freqs (Ground / Tower /
+  // Approach East / Approach West / Delivery / ATIS / Departure / ...).
+  // Voxtral treats them all equally and gets confused about which is the
+  // active working freq. Only add the pending-handoff freq (the one the
+  // plugin just told the pilot to switch to) during airborne states —
+  // that's the ONLY freq the pilot is about to say. Full apt.dat freq
+  // list only during ground / initial-clearance / taxi phases where
+  // multi-freq context is genuinely useful.
   {
     char freq_buf[16];
-    for (const auto &af : ctx_for_whisper.airport_freqs.all) {
-      if (af.freq_khz > 0) {
-        std::snprintf(freq_buf, sizeof(freq_buf), "%.3f",
-                      static_cast<float>(af.freq_khz) / 1000.0f);
-        airport_ctx += " ";
-        airport_ctx += freq_buf;
+    if (!airborne_ifr_drift_risk) {
+      for (const auto &af : ctx_for_whisper.airport_freqs.all) {
+        if (af.freq_khz > 0) {
+          std::snprintf(freq_buf, sizeof(freq_buf), "%.3f",
+                        static_cast<float>(af.freq_khz) / 1000.0f);
+          airport_ctx += " ";
+          airport_ctx += freq_buf;
+        }
       }
     }
     const float ph = engine::pending_handoff_freq();
@@ -797,6 +956,29 @@ static void submit_recording_to_stt() {
     airport_ctx += " RNAV "  + locked_rwy;
   }
   airport_ctx += " cancelling cancel cancellation";
+
+  // ATC-assigned altitude / FL — Voxtral's number tokenizer struggles with
+  // round-thousand altitudes and can emit "2015" for spoken "two thousand".
+  // Adding the exact spoken phrasing of the currently-cleared altitude
+  // strongly anchors the pilot's next readback digit token.
+  // See project_voxtral_stt_errors.md ("2000 feet" -> "2015" row).
+  const int cleared_alt_ft = engine::current_cleared_alt_ft();
+  if (cleared_alt_ft > 0) {
+    const int ta_ft =
+        ctx_for_whisper.transition_alt_ft > 0 ? ctx_for_whisper.transition_alt_ft
+                                              : 5000;
+    if (cleared_alt_ft >= ta_ft) {
+      // FL notation — pilots can say either "flight level NNN" or "FL NNN"
+      // ("F L two five zero"). Bias both forms since Voxtral produces
+      // different tokens for each.
+      const int fl = cleared_alt_ft / 100;
+      airport_ctx += " flight level " + std::to_string(fl);
+      airport_ctx += " FL " + std::to_string(fl);
+    } else {
+      // Feet notation — the digit form is what Voxtral must emit correctly.
+      airport_ctx += " " + std::to_string(cleared_alt_ft) + " feet";
+    }
+  }
 
   if (g_transcript_log_) {
     static std::string s_last_logged_ctx;

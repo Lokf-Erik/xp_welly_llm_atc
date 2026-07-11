@@ -218,6 +218,15 @@ const std::string &pending_departure_label();
 // Exposed so atc_session can include it in the STT pre-context on each PTT.
 const std::string &assigned_star_name();
 
+// Most recent ATC-assigned altitude in feet MSL, or 0 when none is active.
+// Precedence: approach initial FL (once Approach has issued a target) >
+// en-route cleared altitude (covers cruise + step-ups / step-downs) >
+// SID step1 altitude (early climb). Used by atc_session to seed the STT
+// context_bias with the specific "N feet" / "flight level N" tokens the
+// pilot is most likely to read back — nudges Voxtral away from off-by-15
+// number-conversion errors ("2000 feet" → digit token "2015").
+int current_cleared_alt_ft();
+
 // Frequency the pilot was last instructed to switch to (MHz).
 // Set whenever a handoff is issued (departure, TMA exit, en-route).
 // Used by check_handoff_reissue() to re-state the instruction if the pilot

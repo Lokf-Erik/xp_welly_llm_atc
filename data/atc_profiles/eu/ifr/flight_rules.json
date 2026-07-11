@@ -41,6 +41,15 @@
     "REPORT_HOLDING_SHORT": {
       "allowed": ["GROUND", "TOWER"]
     },
+    "_note_READY_FOR_DEPARTURE": "IFR override of VFR rejection wording. Real ICAO ATC does an immediate Tower handoff with freq when the pilot says 'ready for departure' on Ground (no conditional 'when ready'), because the pilot has already declared readiness. VFR file keeps the upstream 'contact Tower when ready for departure' wording for the VFR flow; merge_into deep-merges these keys so the IFR entries take precedence for IFR flights.",
+    "READY_FOR_DEPARTURE": {
+      "allowed": ["TOWER"],
+      "rejection": "{callsign}, roger, contact Tower on {tower_frequency}."
+    },
+    "READY_FOR_DEPARTURE_VFR": {
+      "allowed": ["TOWER"],
+      "rejection": "{callsign}, roger, contact Tower on {tower_frequency}."
+    },
     "READBACK": {
       "allowed": ["DELIVERY", "GROUND", "TOWER", "APPROACH"]
     },

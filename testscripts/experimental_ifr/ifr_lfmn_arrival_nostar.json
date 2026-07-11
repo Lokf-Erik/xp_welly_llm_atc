@@ -1,0 +1,57 @@
+{
+  "_comment": "IFR arrival — direct approach without STAR (en-route fix direct to IAF, no ABDI8R). Arrival-only scenario starting from IFR/APPROACH_CONTACT; no departure exercised here (see ifr_lfmn_arrival_star.json for the full flight). Tests RUNWAY_VACATED_TOWER_ONLY path (taxi instruction instead of Ground freq handoff) via tower_only=true. LFMN APP 120.025 / TWR 118.700.",
+  "name": "IFR arrival — LFMN direct approach (no STAR), RNAV 04L, tower-only",
+  "region": "EU",
+  "context": {
+    "airport": "LFMN",
+    "airport_name": "NICE COTE D AZUR",
+    "towered": true,
+    "tower_only": true,
+    "no_atis": false,
+    "on_ground": false,
+    "com": 120.025,
+    "freq_type": "APPROACH",
+    "runway": "04L",
+    "altitude_ft": 8000,
+    "agl_ft": 7987,
+    "groundspeed_kt": 210,
+    "heading": 50,
+    "lat": 43.800,
+    "lon": 7.350,
+    "airport_lat": 43.6584,
+    "airport_lon": 7.2158,
+    "callsign": "Fox Golf Bravo Charlie Delta",
+    "ifr_destination": "LFMN",
+    "ifr_cruise_alt_ft": 10000,
+    "freqs": [
+      { "mhz": 120.025, "type": "APPROACH", "name": "NICE APP" },
+      { "mhz": 118.700, "type": "TOWER",    "name": "NICE TWR" }
+    ]
+  },
+  "say": [
+    { "note": "0 — Centre handed off. No STAR assigned (direct clearance to IAF). Jump to IFR/APPROACH_CONTACT.",
+      "set_state": "IFR/APPROACH_CONTACT" },
+
+    { "note": "1 — Approach check-in. No STAR step-downs. Expect radar contact.",
+      "text": "Nice Approach Fox Golf Bravo Charlie Delta passing eight thousand feet",
+      "expect": "radar contact",
+      "expect_state": "IFR/APPROACH_DESCENT" },
+
+    { "note": "2 — No STAR: Tower handoff fires without step-down sequence. Simulate via set_state.",
+      "set_state": "IFR/APPROACH_TOWER" },
+
+    { "set": { "com": "118.700", "freq_type": "TOWER" } },
+
+    { "note": "3 — Tower check-in on final. Expect landing clearance.",
+      "text": "Nice Tower Fox Golf Bravo Charlie Delta established RNAV runway zero four left",
+      "expect": "cleared to land",
+      "expect_state": "IFR/LANDING_CLEARED" },
+
+    { "set": { "on_ground": true, "agl_ft": 0, "altitude_ft": 13, "groundspeed_kt": 10 } },
+
+    { "note": "4 — Runway vacated. tower_only=true: RUNWAY_VACATED_TOWER_ONLY template fires — taxi instruction instead of Ground handoff.",
+      "text": "Fox Golf Bravo Charlie Delta runway vacated",
+      "expect": "taxi",
+      "expect_state": "IDLE" }
+  ]
+}

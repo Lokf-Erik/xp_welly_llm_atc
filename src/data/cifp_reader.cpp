@@ -288,10 +288,16 @@ static std::string make_cifp_path(const std::string &cifp_dir,
 
 // ── Approach helpers ───────────────────────────────────────────────────
 
-// Parse "I04LY" → type_char='I', runway="04L", suffix="Y"
+// Parse "I04LY" → type_char='I', runway="04L", suffix='Y'.  Suffix is the
+// trailing variant letter (Z, Y, X, W, ...) — set to 0 when the designator
+// has no variant letter (e.g. "I04L").  ICAO convention: multiple approaches
+// of the same type on the same runway are published Z first, then Y, X, ...
+// so a Z variant is the primary / preferred one — best_approach uses this
+// to tie-break same-type-same-runway candidates.
 static bool parse_approach_designator(const std::string &des,
                                        char &type_char,
-                                       std::string &runway) {
+                                       std::string &runway,
+                                       char &suffix) {
   if (des.size() < 3) return false;
   type_char = des[0];
   size_t i = 1;
@@ -299,7 +305,22 @@ static bool parse_approach_designator(const std::string &des,
   if (i < des.size() &&
       (des[i] == 'L' || des[i] == 'R' || des[i] == 'C')) ++i;
   runway = des.substr(1, i - 1);
+  // Optional dash separator between runway and variant letter — some
+  // AIRAC vendors emit "R04-Y" instead of "R04Y".  Skip a single dash
+  // before scanning for the trailing variant letter.
+  if (i < des.size() && des[i] == '-') ++i;
+  suffix = static_cast<char>(
+      (i < des.size() && std::isalpha(static_cast<unsigned char>(des[i])))
+          ? des[i]
+          : 0);
   return !runway.empty();
+}
+// 3-arg overload for call sites that don't care about the variant letter.
+static bool parse_approach_designator(const std::string &des,
+                                       char &type_char,
+                                       std::string &runway) {
+  char unused = 0;
+  return parse_approach_designator(des, type_char, runway, unused);
 }
 
 // Visibility-driven priority: RNAV preferred in normal conditions,
@@ -712,7 +733,7 @@ ApproachInfo best_approach(const std::string &cifp_dir,
     return {};
   }
 
-  int best_prio = -1;
+  int best_score = -1;
   ApproachInfo best;
 
   std::string line;
@@ -723,16 +744,22 @@ ApproachInfo best_approach(const std::string &cifp_dir,
     if (f.size() < 3) continue;
 
     std::string des = trim(f[2]);
-    char type_char = 0;
+    char type_char = 0, suffix = 0;
     std::string rwy;
-    if (!parse_approach_designator(des, type_char, rwy))
+    if (!parse_approach_designator(des, type_char, rwy, suffix))
       continue;
     if (rwy != dest_runway)
       continue;
 
     int prio = approach_priority(type_char, visibility_m);
-    if (prio > best_prio) {
-      best_prio        = prio;
+    // Composite score: type priority dominates; variant letter breaks
+    // ties within same type+runway.  ICAO convention is Z-first-published
+    // so Z is the primary/preferred variant — Z > Y > X > ... > (none).
+    int suffix_score =
+        suffix ? std::toupper(static_cast<unsigned char>(suffix)) - 'A' + 1 : 0;
+    int score = prio * 100 + suffix_score;
+    if (score > best_score) {
+      best_score       = score;
       best.type_str    = approach_type_str(type_char);
       best.runway      = rwy;
       best.designator  = des;
@@ -747,6 +774,18 @@ ApproachInfo best_approach(const std::string &cifp_dir,
   std::lock_guard<std::mutex> lk(g_alt_cache_mutex);
   g_approach_cache[cache_key] = best;
   return best;
+}
+
+// ── approach_suffix ─────────────────────────────────────────────────────
+
+// Public accessor: parses the designator and returns the variant letter,
+// or 0 when the designator has no variant.  Handles the "R04-Y" dash form
+// via parse_approach_designator's suffix scan (dash is skipped).
+char approach_suffix(const std::string &designator) {
+  char type_char = 0, suffix = 0;
+  std::string rwy;
+  parse_approach_designator(designator, type_char, rwy, suffix);
+  return suffix;
 }
 
 // ── approach_by_designator ──────────────────────────────────────────────

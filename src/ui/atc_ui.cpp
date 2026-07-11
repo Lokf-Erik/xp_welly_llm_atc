@@ -2694,6 +2694,16 @@ static void draw_ifr_tab() {
                 ofp.destination_icao.empty() ? "---"
                                              : ofp.destination_icao.c_str());
 
+    // Filed ICAO route on one line (as filed, incl. speed/level + step
+    // markers, e.g. "N0311F220 DCT KUKEV L50 BANKO/N0307F210 Y52 SALEV DCT").
+    // This is the authoritative filed FPL that drives the enroute FL steps;
+    // wrapped so a long route doesn't overflow the panel.
+    if (!ofp.raw_route.empty()) {
+      ImGui::TextDisabled("FPL:");
+      ImGui::SameLine();
+      ImGui::TextWrapped("%s", ofp.raw_route.c_str());
+    }
+
     if (!ofp.sid_name.empty())
       ImGui::Text("Filed SID: %s  (ATC may assign different)",
                   ofp.sid_name.c_str());
@@ -2711,34 +2721,13 @@ static void draw_ifr_tab() {
       ImGui::Text("Aircraft: %s  (%s)", ofp.aircraft_reg.c_str(),
                   ofp.aircraft_type.empty() ? "?" : ofp.aircraft_type.c_str());
 
-    // Navlog waypoint list
-    if (!ofp.navlog.empty()) {
-      ImGui::Spacing();
-      ImGui::SeparatorText("Route Waypoints");
-      // Fixed-height scrollable child so it doesn't push the rest of the tab.
-      float row_h = ImGui::GetTextLineHeightWithSpacing();
-      float list_h = std::min(static_cast<float>(ofp.navlog.size()) * row_h,
-                              row_h * 12.0f);
-      ImGui::BeginChild("##navlog", ImVec2(0.0f, list_h), false,
-                        ImGuiWindowFlags_HorizontalScrollbar);
-      for (const auto &fix : ofp.navlog) {
-        // Format: "ODIK    UM728   FL080" (SID/STAR fixes shown dimmed)
-        char alt_buf[16] = "";
-        if (fix.alt_ft >= 10000 && fix.alt_ft % 100 == 0)
-          std::snprintf(alt_buf, sizeof(alt_buf), "FL%d", fix.alt_ft / 100);
-        else if (fix.alt_ft > 0)
-          std::snprintf(alt_buf, sizeof(alt_buf), "%dft", fix.alt_ft);
-        char line[64];
-        std::snprintf(line, sizeof(line), "%-8s  %-8s  %s", fix.ident.c_str(),
-                      fix.via_airway.empty() ? "" : fix.via_airway.c_str(),
-                      alt_buf);
-        if (fix.is_sid_star)
-          ImGui::TextDisabled("%s", line);
-        else
-          ImGui::TextUnformatted(line);
-      }
-      ImGui::EndChild();
-    }
+    // Per-fix "Route Waypoints" list removed (2026-07-10): its altitude
+    // column showed SimBrief's own computed per-fix profile (mid-climb /
+    // TOD guesses), which the plugin deliberately does NOT use for ATC
+    // clearances (those come from the filed step markers in the one-line
+    // FPL above). Showing SimBrief altitudes risked implying "ATC will
+    // clear you to FLxxx here" when it won't. The one-line filed FPL is
+    // the authoritative route display.
 
     ImGui::Spacing();
     if (ImGui::Button("Clear OFP")) {

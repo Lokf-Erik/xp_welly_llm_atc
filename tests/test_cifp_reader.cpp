@@ -138,3 +138,62 @@ TEST_CASE("cifp: is_sid_valid_for_runway returns false for unknown airport", "[c
   reset();
   REQUIRE(!cifp_reader::is_sid_valid_for_runway(kCifpDir, "ZZZZ", "ODIK2A", "22"));
 }
+
+// ── approach_suffix ──────────────────────────────────────────────────
+// Extracts the trailing variant letter (Z, Y, X, ...) from an approach
+// designator. Must handle both the compact form ("I04LZ") and the
+// dash-separated form some AIRAC vendors emit for LFLP ("R04-Y").
+// Returns 0 when no variant letter is present.
+
+TEST_CASE("cifp: approach_suffix extracts trailing letter", "[cifp][approach]") {
+  CHECK(cifp_reader::approach_suffix("I04LZ") == 'Z');
+  CHECK(cifp_reader::approach_suffix("I04LY") == 'Y');
+  CHECK(cifp_reader::approach_suffix("R04-Y") == 'Y');
+  CHECK(cifp_reader::approach_suffix("R04-Z") == 'Z');
+  CHECK(cifp_reader::approach_suffix("R04Z")  == 'Z');
+  CHECK(cifp_reader::approach_suffix("I04L")  == 0);     // no variant
+  CHECK(cifp_reader::approach_suffix("R22")   == 0);
+  CHECK(cifp_reader::approach_suffix("")      == 0);
+}
+
+// ── star_waypoints: STAR-lookahead constraint scan (P0-A) ─────────────
+// build_descent_clearance's STAR-lookahead clears the initial descent to
+// the first "at or below" constraint on the STAR (LUVOB FL090 on SALE3P)
+// instead of the cruise*0.66 fallback. This pins the data source: the
+// first is_ceiling waypoint must be LUVOB at FL090.
+
+TEST_CASE("cifp: star_waypoints SALE3P first at-or-below is LUVOB FL090",
+          "[cifp][lflp][star]") {
+  reset();
+  auto wps = cifp_reader::star_waypoints(kCifpDir, "LFLP", "SALE3P");
+  // Only constrained waypoints are returned (LUVOB, GOVNA, PIRUV).
+  REQUIRE(wps.size() >= 3);
+  // First "at or below" (is_ceiling) constraint governs the initial descent.
+  const cifp_reader::StarWaypoint *first_ceiling = nullptr;
+  for (const auto &w : wps) {
+    if (w.is_ceiling && w.alt.feet > 0) {
+      first_ceiling = &w;
+      break;
+    }
+  }
+  REQUIRE(first_ceiling != nullptr);
+  CHECK(first_ceiling->ident == "LUVOB");
+  CHECK(first_ceiling->alt.feet == 9000);
+  CHECK(first_ceiling->alt.is_fl);
+}
+
+// ── best_approach: Zulu tie-break ────────────────────────────────────
+// LFLP fixture has both R04-Y and R04-Z with identical RNAV type on
+// runway 04. Before the tie-break fix, the file-order-first entry won
+// (Y). ICAO convention is Z = first published = primary, so best_approach
+// must return R04-Z regardless of file order.
+
+TEST_CASE("cifp: best_approach prefers Zulu variant on same-type tie",
+          "[cifp][lflp][approach]") {
+  reset();
+  auto appr = cifp_reader::best_approach(kCifpDir, "LFLP", "04");
+  REQUIRE(!appr.designator.empty());
+  CHECK(appr.designator == "R04-Z");
+  CHECK(appr.runway == "04");
+  CHECK(appr.type_str == "RNAV");
+}
