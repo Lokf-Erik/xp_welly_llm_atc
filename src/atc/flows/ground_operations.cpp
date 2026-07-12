@@ -1005,6 +1005,7 @@ bool check_handoff_reissue(const PilotMessage &msg, const XPlaneContext &ctx,
   bool ifr_handoff = (state_str == "IFR/FREQ_HANDOFF"        ||
                       state_str == "IFR/ENROUTE_CRUISE"      ||
                       state_str == "IFR/DESCENT"             ||
+                      state_str == "IFR/ARRIVAL"             ||
                       state_str == "IFR/APPROACH_CONTACT"    ||
                       state_str == "IFR/APPROACH_DESCENT"    ||
                       state_str == "IFR/APPROACH_TOWER"      ||
@@ -1106,7 +1107,8 @@ bool check_freq_precondition(const PilotMessage &msg, const XPlaneContext &ctx,
     const std::string s = atc_state_machine::state_name(internal::get_state_ref());
     if (s == "IFR/RADAR_CONTACT"    || s == "IFR/ENROUTE_CRUISE" ||
         s == "IFR/EN_ROUTE"         || s == "IFR/DESCENT"         ||
-        s == "IFR/FREQ_HANDOFF"     || s == "IFR/APPROACH_CONTACT" ||
+        s == "IFR/ARRIVAL"          || s == "IFR/FREQ_HANDOFF"     ||
+        s == "IFR/APPROACH_CONTACT" ||
         s == "IFR/APPROACH_DESCENT" || s == "IFR/APPROACH_TOWER"  ||
         s == "IFR/LANDING_CLEARED")
       return false;

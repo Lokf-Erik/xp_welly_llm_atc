@@ -1623,9 +1623,20 @@ void update() {
           }
         }
 
-        // Transition altitude from apt.dat 1302 transition_alt.
+        // Transition altitude from apt.dat 1302. Prefer the filed IFR
+        // destination when airborne -- the nearest airport drifts to phantom
+        // heliports on approach whose missing 1302 collapses TA to the 5000
+        // default, mis-classifying terminal altitudes as FL (LFLP TA=6500 ->
+        // TL 7000 -> LP403's 6500 ft must read "6500 feet", not "flight level
+        // 65"; LIMF -> LFLP 2026-07-11).
         ctx.transition_alt_ft = 0;
-        auto ta_it = transition_alt_cache_.find(ctx.nearest_airport_id);
+        std::string ta_icao = ctx.nearest_airport_id;
+        if (!ctx.on_ground) {
+          auto ofp_ta = simbrief_ofp::get();
+          if (ofp_ta.valid && !ofp_ta.destination_icao.empty())
+            ta_icao = ofp_ta.destination_icao;
+        }
+        auto ta_it = transition_alt_cache_.find(ta_icao);
         if (ta_it != transition_alt_cache_.end())
           ctx.transition_alt_ft = ta_it->second;
       } else {
@@ -1658,9 +1669,20 @@ void update() {
     // When s_metar_qnh_hpa is still 0 the periodic tick keeps retrying at 1 Hz
     // until X-Plane's async weather download delivers a valid METAR.
     {
-      bool airport_changed = (ctx.nearest_airport_id != s_metar_airport);
+      // Prefer the filed IFR destination's METAR when airborne (same rationale
+      // as the transition-altitude lookup): nearest_airport_id drifts to
+      // phantom heliports on approach, giving a wrong QNH in the descent
+      // clearances (LIMF -> LFLP 2026-07-11 spoke "QNH 1012" mid-descent
+      // instead of LFLP's local ~1027). Ground phases keep the nearest airport.
+      std::string qnh_icao = ctx.nearest_airport_id;
+      if (!ctx.on_ground) {
+        auto ofp_q = simbrief_ofp::get();
+        if (ofp_q.valid && !ofp_q.destination_icao.empty())
+          qnh_icao = ofp_q.destination_icao;
+      }
+      bool airport_changed = (qnh_icao != s_metar_airport);
       if (airport_changed || (++s_metar_tick % 60 == 0)) {
-        s_metar_airport = ctx.nearest_airport_id;
+        s_metar_airport = qnh_icao;
         if (!s_metar_airport.empty()) {
           XPLMFixedString150_t metar_buf = {};
           XPLMGetMETARForAirport(s_metar_airport.c_str(), &metar_buf);
@@ -1692,13 +1714,23 @@ void update() {
     // this airport, try the custom scenery package at
     // {xp_system}/Custom Scenery/{ICAO}/Earth nav data/apt.dat.
     // Only attempted once per airport (result cached in transition_alt_cache_).
-    if (ctx.transition_alt_ft == 0 && !ctx.nearest_airport_id.empty() &&
+    // Target the filed IFR destination when airborne (same rationale as the
+    // primary cache lookup above): LFLP's 1302 (6500 ft) lives in its Custom
+    // Scenery apt.dat, not the global cache, so the destination -- not the
+    // drifting phantom nearest -- must be the one consulted here.
+    std::string ta_icao_lazy = ctx.nearest_airport_id;
+    if (!ctx.on_ground) {
+      auto ofp_ta = simbrief_ofp::get();
+      if (ofp_ta.valid && !ofp_ta.destination_icao.empty())
+        ta_icao_lazy = ofp_ta.destination_icao;
+    }
+    if (ctx.transition_alt_ft == 0 && !ta_icao_lazy.empty() &&
         towered_cache_ready_) {
       static std::string last_checked_icao;
-      if (ctx.nearest_airport_id != last_checked_icao) {
-        last_checked_icao = ctx.nearest_airport_id;
+      if (ta_icao_lazy != last_checked_icao) {
+        last_checked_icao = ta_icao_lazy;
         std::string custom_apt = xplane_system_path() + "Custom Scenery/" +
-                                 ctx.nearest_airport_id +
+                                 ta_icao_lazy +
                                  "/Earth nav data/apt.dat";
         std::ifstream f(custom_apt);
         if (f.is_open()) {
@@ -1715,7 +1747,7 @@ void update() {
               try {
                 int alt = std::stoi(val);
                 if (alt > 0) {
-                  transition_alt_cache_[ctx.nearest_airport_id] = alt;
+                  transition_alt_cache_[ta_icao_lazy] = alt;
                   ctx.transition_alt_ft = alt;
                   {
                     char msg[128];
@@ -1723,7 +1755,7 @@ void update() {
                         msg, sizeof(msg),
                         "[xp_wellys_atc] Custom Scenery transition_alt "
                         "%s: %d ft\n",
-                        ctx.nearest_airport_id.c_str(), alt);
+                        ta_icao_lazy.c_str(), alt);
                     XPLMDebugString(msg);
                   }
                 }

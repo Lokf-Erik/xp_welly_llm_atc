@@ -125,3 +125,61 @@ TEST_CASE("sector_picker: skips controller with no frequency",
   REQUIRE(best != nullptr);
   CHECK(best->name == "CHAMBERY");
 }
+
+// ── pick_next_approach: lower-ceiling tiebreak (Geneva -> Chambery) ─────────
+// Regression for the LFLP arrival: Geneva (floor 1000, ceiling FL195) and
+// Chambery (floor 1000, ceiling FL115) both enclose the field below FL115.
+// pick_next (higher floor, first-seen tie) stays on Geneva forever, so the
+// Geneva -> Chambery handoff never fires. pick_next_approach breaks the floor
+// tie by the LOWER ceiling -> Chambery, the more terminal sector.
+static Controller make_ctrl_fc(const std::string &name, ControllerRole role,
+                               uint32_t freq_khz, int floor_ft, int ceil_ft) {
+  Controller c;
+  c.name = name;
+  c.role = role;
+  c.freqs_khz.push_back(freq_khz);
+  c.floor_ft = floor_ft;
+  c.ceiling_ft = ceil_ft;
+  return c;
+}
+
+TEST_CASE("sector_picker: approach prefers lower ceiling on floor tie",
+          "[sector_picker]") {
+  auto geneva = make_ctrl_fc("GENEVA", ControllerRole::TRACON, 119530, 1000, 19500);
+  auto chambery = make_ctrl_fc("LYON", ControllerRole::TRACON, 121205, 1000, 11500);
+  // Geneva listed first (as atc.dat record order would have it).
+  std::vector<const Controller *> enclosing = {&geneva, &chambery};
+
+  // Plain pick_next: floor tie -> first-seen -> Geneva (the bug).
+  CHECK(sector_picker::pick_next(enclosing, {})->name == "GENEVA");
+
+  // Approach pick: lower ceiling -> Chambery (LYON/LFLB record). dest pos 0,0
+  // skips the facility tiebreak (not needed to separate ceilings here).
+  auto *best = sector_picker::pick_next_approach(enclosing, {}, 0.0, 0.0);
+  REQUIRE(best != nullptr);
+  CHECK(best->ceiling_ft == 11500);
+  CHECK(best->freqs_khz.front() == 121205);
+}
+
+TEST_CASE("sector_picker: approach still honors higher floor first",
+          "[sector_picker]") {
+  // When floors differ, higher floor wins regardless of ceiling (same as
+  // pick_next) -- the lower-ceiling rule only breaks floor ties.
+  auto low = make_ctrl_fc("A", ControllerRole::TRACON, 100000, 1000, 9000);
+  auto high = make_ctrl_fc("B", ControllerRole::TRACON, 100100, 5000, 19500);
+  std::vector<const Controller *> enclosing = {&low, &high};
+  auto *best = sector_picker::pick_next_approach(enclosing, {}, 0.0, 0.0);
+  REQUIRE(best != nullptr);
+  CHECK(best->name == "B");
+}
+
+TEST_CASE("sector_picker: approach backward-handoff guard holds",
+          "[sector_picker]") {
+  auto geneva = make_ctrl_fc("GENEVA", ControllerRole::TRACON, 119530, 1000, 19500);
+  auto chambery = make_ctrl_fc("LYON", ControllerRole::TRACON, 121205, 1000, 11500);
+  std::vector<const Controller *> enclosing = {&geneva, &chambery};
+  // Already handed off from Chambery -> must not re-elect it; falls to Geneva.
+  auto *best = sector_picker::pick_next_approach(enclosing, {121205}, 0.0, 0.0);
+  REQUIRE(best != nullptr);
+  CHECK(best->name == "GENEVA");
+}

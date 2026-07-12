@@ -125,6 +125,14 @@ void cancel_readback();
 // the user knows exactly what to read back instead of guessing.
 const std::string &last_clearance_text();
 
+// Record the most recent substantive tower response so REQUEST_REPEAT
+// ("say again") can replay it verbatim. process() sets this for the VFR
+// template path automatically; IFR clearances are generated engine-side and
+// spoken directly, bypassing process(), so atc_session calls this from its
+// TTS choke points for those. Corrections / reminders / the repeat-reply
+// itself must NOT be recorded (the caller filters them out).
+void set_last_tower_response(const std::string &text);
+
 // Frame-driven readback-reminder consumer. Returns a non-empty
 // TRAFFIC_DIALOG template_key when the tower should remind the pilot
 // to read back (or when the clearance is being cancelled because too

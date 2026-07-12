@@ -593,6 +593,17 @@ const std::string &last_clearance_text() {
   return g_state.last_clearance_text_;
 }
 
+void set_last_tower_response(const std::string &text) {
+  if (text.empty())
+    return;
+  // NOTE: deliberately does NOT bump_gen(). atc_session calls this from
+  // speak_response_guarded AFTER the state-revert guard captured expected_gen;
+  // bumping here would make the guard always see a "stale" generation and never
+  // roll back on TTS failure. last_tower_response_text_ is a replay memory, not
+  // snapshot-tracked state, so it needs no gen bump.
+  g_state.last_tower_response_text_ = text;
+}
+
 std::string consume_readback_reminder(double now_secs) {
   // Gate 1: no pending readback → nothing to remind about.
   if (!g_state.readback_pending_)
@@ -628,6 +639,7 @@ std::string consume_readback_reminder(double now_secs) {
     const bool is_ifr_inflight =
         std::strcmp(cur, "IFR/ENROUTE_CRUISE") == 0    ||
         std::strcmp(cur, "IFR/DESCENT") == 0            ||
+        std::strcmp(cur, "IFR/ARRIVAL") == 0            ||
         std::strcmp(cur, "IFR/APPROACH_CONTACT") == 0   ||
         std::strcmp(cur, "IFR/APPROACH_DESCENT") == 0   ||
         std::strcmp(cur, "IFR/APPROACH_TOWER") == 0;
@@ -958,7 +970,7 @@ ATCResponse process(const intent_parser::PilotMessage &msg_in,
         cs = msg.callsign;
       else
         cs = settings::pilot_callsign();
-      resp.text = cs + ", keine vorherige Anweisung zum Wiederholen.";
+      resp.text = cs + ", no previous clearance to repeat.";
     }
     resp.next_state = g_state.state_;
     resp.requires_readback = g_state.readback_pending_;

@@ -150,6 +150,15 @@ ApproachInfo approach_by_designator(const std::string &cifp_dir,
                                      const std::string &icao,
                                      const std::string &designator);
 
+// True if the approach terminates at the runway threshold (a straight-in
+// instrument approach to a DA -> "report established"); false if it has no
+// runway leg (MDA / visual-final approach flown visually on the last segment,
+// e.g. LFMN R04LA/R22LD -> "report runway in sight"). Defaults to true
+// (instrument) when the CIFP is unavailable.
+bool approach_terminates_at_runway(const std::string &cifp_dir,
+                                   const std::string &icao,
+                                   const std::string &designator);
+
 // Extract the trailing variant letter from an approach designator.
 // Examples: "I04LZ" -> 'Z', "R04-Y" -> 'Y', "I04L" -> 0 (no variant).
 // Handles dash separator emitted by some AIRAC vendors (e.g. LFLP:R04-Y).
@@ -183,9 +192,14 @@ struct StarWaypoint {
 // Returns all waypoints in the named STAR that have an altitude or speed
 // constraint, ordered by sequence number (entry fix first).
 // Returns empty vector when the STAR is not found or CIFP is unavailable.
+// constrained_only=true (default) keeps only fixes carrying an altitude or
+// speed constraint (back-compat for the step-down walker). Pass false to get
+// the COMPLETE ordered STAR fix list -- every fix, unconstrained ones with
+// alt.feet==0/speed_kt==0 -- for the full arrival route table.
 std::vector<StarWaypoint> star_waypoints(const std::string &cifp_dir,
                                           const std::string &icao,
-                                          const std::string &star_name);
+                                          const std::string &star_name,
+                                          bool constrained_only = true);
 
 // Returns the last fix (highest sequence number) of the named STAR,
 // regardless of whether it carries an altitude constraint.  This is
@@ -207,7 +221,8 @@ std::vector<StarWaypoint> approach_procedure_waypoints(
     const std::string &cifp_dir,
     const std::string &icao,
     const std::string &approach_designator,
-    const std::string &transition_ident);
+    const std::string &transition_ident,
+    bool constrained_only = true);
 
 // ── STAR queries ──────────────────────────────────────────────────────────
 

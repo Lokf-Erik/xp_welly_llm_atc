@@ -827,6 +827,38 @@ ApproachInfo approach_by_designator(const std::string &cifp_dir,
   return {};
 }
 
+// ── approach_terminates_at_runway ───────────────────────────────────────
+
+// True if the approach's legs include a leg to the runway threshold (fix
+// "RWxx" or subsection "G"). Straight-in instrument approaches with vertical
+// guidance to a DA terminate at the runway; MDA / visual-final approaches
+// (e.g. LFMN R04LA, R22LD) end at fixes + a missed-approach hold and never
+// reach the runway -- the pilot flies the last segment visually. The CIFP
+// carries no explicit DA/MDA value, so runway-leg presence is the reliable
+// structural proxy. Used to pick "report established" (true = DA/instrument)
+// vs "report runway in sight" (false = MDA/visual). Defaults to true
+// (instrument) when data is unavailable -- the conservative choice.
+bool approach_terminates_at_runway(const std::string &cifp_dir,
+                                   const std::string &icao,
+                                   const std::string &designator) {
+  if (cifp_dir.empty() || icao.empty() || designator.empty())
+    return true;
+  std::ifstream in(make_cifp_path(cifp_dir, icao));
+  if (!in.good())
+    return true;
+  std::string line;
+  while (std::getline(in, line)) {
+    if (line.size() < 6 || line.compare(0, 6, "APPCH:") != 0)
+      continue;
+    auto f = split_csv(line);
+    if (f.size() < 8) continue;
+    if (trim(f[2]) != designator) continue;
+    if (trim(f[4]).rfind("RW", 0) == 0) return true; // leg to runway threshold
+    if (trim(f[7]) == "G") return true;              // subsection G = runway
+  }
+  return false; // no runway leg -> visual / MDA last segment
+}
+
 // ── best_runway_for_approach ────────────────────────────────────────────
 
 // Headwind alignment score [0, 100].  runway e.g. "04L", wind_from in true deg.
@@ -1168,11 +1200,13 @@ static std::unordered_map<std::string, std::vector<StarWaypoint>>
 
 std::vector<StarWaypoint> star_waypoints(const std::string &cifp_dir,
                                           const std::string &icao,
-                                          const std::string &star_name) {
+                                          const std::string &star_name,
+                                          bool constrained_only) {
   if (cifp_dir.empty() || icao.empty() || star_name.empty())
     return {};
 
-  std::string cache_key = icao + ":STARWPTS:" + star_name;
+  std::string cache_key =
+      icao + ":STARWPTS:" + star_name + (constrained_only ? ":C" : ":ALL");
   {
     std::lock_guard<std::mutex> lk(g_alt_cache_mutex);
     auto it = g_star_waypoints_cache.find(cache_key);
@@ -1215,8 +1249,8 @@ std::vector<StarWaypoint> star_waypoints(const std::string &cifp_dir,
       catch (...) { speed_kt = 0; }
     }
 
-    if (alt.feet == 0 && speed_kt == 0)
-      continue; // no constraint — skip
+    if (constrained_only && alt.feet == 0 && speed_kt == 0)
+      continue; // no constraint — skip (full route table keeps it)
 
     StarWaypoint wp;
     wp.ident      = wpt;
@@ -1308,14 +1342,16 @@ std::vector<StarWaypoint> approach_procedure_waypoints(
     const std::string &cifp_dir,
     const std::string &icao,
     const std::string &approach_designator,
-    const std::string &transition_ident) {
+    const std::string &transition_ident,
+    bool constrained_only) {
 
   if (cifp_dir.empty() || icao.empty() || approach_designator.empty() ||
       transition_ident.empty())
     return {};
 
-  const std::string cache_key =
-      icao + ":APPCHWPTS:" + approach_designator + ":" + transition_ident;
+  const std::string cache_key = icao + ":APPCHWPTS:" + approach_designator +
+                                ":" + transition_ident +
+                                (constrained_only ? ":C" : ":ALL");
   {
     std::lock_guard<std::mutex> lk(g_alt_cache_mutex);
     auto it = g_star_waypoints_cache.find(cache_key);
@@ -1375,7 +1411,6 @@ std::vector<StarWaypoint> approach_procedure_waypoints(
 
     std::string alt_desc = trim(f[22]);
     CifpAlt     alt      = parse_alt(f[23]);
-    if (alt.feet == 0) continue; // no altitude constraint
 
     int speed_kt = 0;
     if (f.size() > 27) {
@@ -1383,6 +1418,12 @@ std::vector<StarWaypoint> approach_procedure_waypoints(
       try { if (!sv.empty()) speed_kt = std::stoi(sv); }
       catch (...) { speed_kt = 0; } // NOLINT(bugprone-empty-catch)
     }
+
+    // constrained_only (default): drop fixes with neither alt nor speed
+    // (matches star_waypoints; the old test dropped speed-only fixes too).
+    // Full route table (false) keeps every fix.
+    if (constrained_only && alt.feet == 0 && speed_kt == 0)
+      continue;
 
     const std::string wpt_desc8 = f.size() > 8 ? trim(f[8]) : "";
     StarWaypoint wp;

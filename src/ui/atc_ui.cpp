@@ -2616,8 +2616,14 @@ static void draw_ifr_tab() {
   if (fetching)
     ImGui::EndDisabled();
 
-  // Quick-start buttons: jump directly to En-Route or Approach phase.
-  ImGui::SameLine(0, 16);
+  // Quick-start buttons: jump directly to a flight phase. Own line (below the
+  // preceding controls) so the full ENR / ARR / APP / PRE-DEP row is not
+  // crowded onto the same line.
+  // "Switch COM to X" popup state: a JUMP changes ATC state only, never the
+  // radio, so after a jump we tell the user which controller frequency to tune.
+  static float       s_jump_popup_freq  = 0.0f;
+  static const char *s_jump_popup_phase = "";
+
   ImGui::TextDisabled("JUMP:");
   ImGui::SameLine(0, 4);
   {
@@ -2625,6 +2631,29 @@ static void draw_ifr_tab() {
     const AS cur = atc_state_machine::get_state();
     const auto &q   = simbrief_ofp::get();
     const int enr_ft = (q.valid && q.cruise_alt_ft > 0) ? q.cruise_alt_ft : 18000;
+
+    auto after_jump = [&](const char *phase) {
+      s_jump_popup_freq  = engine::jump_switch_freq_mhz();
+      s_jump_popup_phase = phase;
+      ImGui::OpenPopup("JumpSwitchFreq");
+    };
+
+    // Chronological flight order: PRE-DEP -> ENR -> ARR -> APP.
+    const bool predep_active = (cur == AS::IFR_PREDEP_CLEARANCE ||
+                                 cur == AS::IFR_CLEARED);
+    if (predep_active) {
+      ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.15f, 0.55f, 0.15f, 1.00f));
+      ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.20f, 0.70f, 0.20f, 1.00f));
+      ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.10f, 0.40f, 0.10f, 1.00f));
+    }
+    if (ImGui::SmallButton("PRE-DEP")) {
+      engine::training_jump_predep();
+      after_jump("PRE-DEP");
+    }
+    if (predep_active)
+      ImGui::PopStyleColor(3);
+
+    ImGui::SameLine(0, 4);
 
     const bool enr_active = (cur == AS::IFR_ENROUTE_CRUISE ||
                               cur == AS::IFR_RADAR_CONTACT  ||
@@ -2634,9 +2663,27 @@ static void draw_ifr_tab() {
       ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.20f, 0.70f, 0.20f, 1.00f));
       ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.10f, 0.40f, 0.10f, 1.00f));
     }
-    if (ImGui::SmallButton("ENR"))
+    if (ImGui::SmallButton("ENR")) {
       engine::training_jump_enroute(enr_ft);
+      after_jump("EN-ROUTE");
+    }
     if (enr_active)
+      ImGui::PopStyleColor(3);
+
+    ImGui::SameLine(0, 4);
+
+    // ARR: on the STAR, descending, under ACC (before the TMA/approach handoff).
+    const bool arr_active = (cur == AS::IFR_ARRIVAL || cur == AS::IFR_DESCENT);
+    if (arr_active) {
+      ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.15f, 0.55f, 0.15f, 1.00f));
+      ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.20f, 0.70f, 0.20f, 1.00f));
+      ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.10f, 0.40f, 0.10f, 1.00f));
+    }
+    if (ImGui::SmallButton("ARR")) {
+      engine::training_jump_arrival();
+      after_jump("ARRIVAL");
+    }
+    if (arr_active)
       ImGui::PopStyleColor(3);
 
     ImGui::SameLine(0, 4);
@@ -2649,24 +2696,23 @@ static void draw_ifr_tab() {
       ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.20f, 0.70f, 0.20f, 1.00f));
       ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.10f, 0.40f, 0.10f, 1.00f));
     }
-    if (ImGui::SmallButton("APP"))
+    if (ImGui::SmallButton("APP")) {
       engine::training_jump_approach();
+      after_jump("APPROACH");
+    }
     if (app_active)
       ImGui::PopStyleColor(3);
+  }
 
-    ImGui::SameLine(0, 4);
-
-    const bool predep_active = (cur == AS::IFR_PREDEP_CLEARANCE ||
-                                 cur == AS::IFR_CLEARED);
-    if (predep_active) {
-      ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.15f, 0.55f, 0.15f, 1.00f));
-      ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.20f, 0.70f, 0.20f, 1.00f));
-      ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.10f, 0.40f, 0.10f, 1.00f));
-    }
-    if (ImGui::SmallButton("PRE-DEP"))
-      engine::training_jump_predep();
-    if (predep_active)
-      ImGui::PopStyleColor(3);
+  // Popup: which frequency to tune after the jump (the jump does not touch the
+  // radio). Dismisses on click-away.
+  if (ImGui::BeginPopup("JumpSwitchFreq")) {
+    ImGui::Text("Jumped to %s.", s_jump_popup_phase);
+    if (s_jump_popup_freq >= 100.0f)
+      ImGui::Text("Switch COM to %.3f", s_jump_popup_freq);
+    else
+      ImGui::TextDisabled("Tune the controller frequency manually.");
+    ImGui::EndPopup();
   }
 
   // Status line

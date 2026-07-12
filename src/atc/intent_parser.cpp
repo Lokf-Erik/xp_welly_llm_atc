@@ -243,6 +243,7 @@ static const std::unordered_map<std::string, std::string> kWordAliases = {
     {"tpcat", "tipik"}, // "TPCAT" → "TIPIK" (Voxtral waypoint garble)
     // ATC facility name mishearings:
     {"race", "reims"},    // "Race radar/information" → "Reims" (Voxtral: /ʁɛ̃s/→/reɪs/)
+    {"prince", "france"}, // "Contact Prince on 118.030" → "France" (Voxtral: /fʁɑ̃s/→/pʁɪns/; LIMF -> LFLP 2026-07-11)
     // Common ATC word mishearings:
     {"content", "contact"}, // "content tower" → "contact tower"
 };
@@ -280,6 +281,9 @@ static const std::vector<std::pair<std::string, std::string>> kPhraseAliases = {
     // Voxtral mishears "runway" as "one way" (e.g. "one way 04 vacated" ->
     // "runway 04 vacated"). "one way" is not ATC phraseology so safe to alias.
     {"one way", "runway"},
+    // Voxtral mishears "flight level" as "flat level" in descent readbacks
+    // ("flat level 65" -> "flight level 65"; LIMF -> LFLP 2026-07-11).
+    {"flat level", "flight level"},
     // Voxtral mishears "two" as "to" in frequencies — anchor with "decimal"
     // so "one to one decimal" = 121.xxx is fixed without corrupting callsigns
     // like "November One One One" which would match "one to one" without anchor.
@@ -741,6 +745,26 @@ PilotMessage parse(const std::string &transcript,
   auto m = intent_rules::match(text);
   msg.intent = m.intent;
   msg.confidence = m.confidence;
+
+  // 4b. "Say again" / repeat-clearance request (EUROCONTROL "SAY AGAIN").
+  //     Deterministic override: the rule table and the LM never offer
+  //     REQUEST_REPEAT (it is not in any state's valid_intents), so recognise
+  //     it here at high confidence. The state machine then replays the last
+  //     clearance verbatim (atc_state_machine::process REQUEST_REPEAT handler),
+  //     and REQUEST_REPEAT is an escape_intent so a pending readback is
+  //     preserved rather than clobbering this into READBACK (engine.cpp ~1924).
+  //     Pilots don't use these phrases inside a readback, so false positives
+  //     are not a concern. "repeat" alone is avoided (too broad) -- it is only
+  //     matched via "you repeat" / "please repeat".
+  {
+    auto has = [&](const char *s) { return text.find(s) != std::string::npos; };
+    if (has("say again") || has("confirm cleared") || has("you repeat") ||
+        has("please repeat")) {
+      msg.intent     = PilotIntent::REQUEST_REPEAT;
+      msg.confidence = 0.97f;
+      return msg; // skip adjustments -- nothing to downgrade on a repeat request
+    }
+  }
 
   // 5. Apply post-match adjustments (VRP upgrade, phase filter, airport-type
   //    mismatch demotions). Order is the JSON `adjustments` array order; each
