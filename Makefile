@@ -429,7 +429,7 @@ endif
 # count. This survives manual renames (e.g. -23) and new commits: the next
 # build after -23 is always -24, never a reset to -2.
 _DIST_BASE    := xp_wellys_atc-$(DIST_PLATFORM)-$(DIST_VERSION)-$(DIST_GIT_HASH)
-DIST_BUILD_N  := $(shell m=$$(for f in dist/xp_wellys_atc-$(DIST_PLATFORM)-$(DIST_VERSION)-*.$(DIST_EXT); do [ -e "$$f" ] || continue; b=$${f%.$(DIST_EXT)}; echo $${b##*-}; done | sort -n | tail -1); echo $$(( $${m:-0} + 1 )))
+DIST_BUILD_N  := $(shell m=$$(for f in dist/xp_wellys_atc-$(DIST_PLATFORM)-$(DIST_VERSION)-*.$(DIST_EXT); do [ -e "$$f" ] || continue; b=$${f%.$(DIST_EXT)}; echo $${b\#\#*-}; done | sort -n | tail -1); echo $$(( $${m:-0} + 1 )))
 DIST_NAME     := $(_DIST_BASE)-$(DIST_BUILD_N)
 DIST_STAGE    := dist/$(DIST_NAME)/xp_wellys_atc
 
