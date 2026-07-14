@@ -65,8 +65,20 @@ void reset();
 // target state. Position the aircraft in X-Plane first; the plugin picks up
 // normal proactive messaging from the new state on the next flight-loop tick.
 void training_jump_enroute(int cleared_alt_ft); // IFR_ENROUTE_CRUISE, cleared FL in feet
+void training_jump_arrival();                   // IFR_ARRIVAL (on the STAR, descending, under ACC)
 void training_jump_approach();                  // IFR_APPROACH_CONTACT (pilot calls in)
 void training_jump_predep();                    // IFR_PREDEP_CLEARANCE (ground, pre-startup)
+
+// Frequency (MHz) the pilot should tune after the most recent training jump
+// (the target phase's controller freq), or 0.0 if unknown. Jumps set ATC state
+// only, never the radio; the UI surfaces this as a "Switch COM to X" popup.
+float jump_switch_freq_mhz();
+
+// CIFP-assigned landing runway (e.g. "22L"), set at the approach clearance and
+// retained through landing + taxi-in. Empty before an approach is assigned.
+// The STT context bias uses this (persistent) instead of the state machine's
+// assigned_runway(), which is cleared post-landing.
+const std::string &assigned_landing_runway();
 
 // Number of LLM inferences kicked off by the engine since last reset()
 // (intent classification, sub-variant disambiguation). Callers that
@@ -177,10 +189,16 @@ bool poll_enroute(const xplane_context::XPlaneContext &ctx, float dt,
                   std::string *out_text,
                   bool *out_requires_readback = nullptr);
 
-// IFR descent phase (IFR_DESCENT state): TMA/CTR entry detection and
-// Approach frequency handoff. Runs after build_descent_clearance fires
-// until state transitions to IFR_APPROACH_CONTACT.
+// IFR descent phase (IFR_DESCENT state): advances to IFR_ARRIVAL when the
+// aircraft reaches the STAR entry fix. Runs after build_descent_clearance fires.
 bool poll_descent(const xplane_context::XPlaneContext &ctx, float dt,
+                  std::string *out_text,
+                  bool *out_requires_readback = nullptr);
+
+// IFR arrival phase (IFR_ARRIVAL state): aircraft flying the STAR under
+// ACC/arrival control. Fires the real Approach handoff (TMA/CTR boundary or
+// 50 NM fallback) -> IFR_APPROACH_CONTACT.
+bool poll_arrival(const xplane_context::XPlaneContext &ctx, float dt,
                   std::string *out_text,
                   bool *out_requires_readback = nullptr);
 
@@ -201,6 +219,7 @@ bool poll_approach_alignment(const xplane_context::XPlaneContext &ctx, float dt,
 // "Marseille"). Empty until the first IFR departure handoff fires.
 // Used by atc_ui to show the correct controller name in the transcript.
 const std::string &current_controller_label();
+const std::string &pending_controller_label();
 
 // Store a controller label without triggering a full handoff (used by
 // ground_operations when the departure contact is embedded in the takeoff
@@ -217,6 +236,15 @@ const std::string &pending_departure_label();
 // ATC-assigned STAR name (set by build_descent_clearance, empty before then).
 // Exposed so atc_session can include it in the STT pre-context on each PTT.
 const std::string &assigned_star_name();
+
+// Most recent ATC-assigned altitude in feet MSL, or 0 when none is active.
+// Precedence: approach initial FL (once Approach has issued a target) >
+// en-route cleared altitude (covers cruise + step-ups / step-downs) >
+// SID step1 altitude (early climb). Used by atc_session to seed the STT
+// context_bias with the specific "N feet" / "flight level N" tokens the
+// pilot is most likely to read back — nudges Voxtral away from off-by-15
+// number-conversion errors ("2000 feet" → digit token "2015").
+int current_cleared_alt_ft();
 
 // Frequency the pilot was last instructed to switch to (MHz).
 // Set whenever a handoff is issued (departure, TMA exit, en-route).

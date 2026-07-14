@@ -465,6 +465,32 @@ std::map<std::string, std::string> build_vars(const PilotMessage &msg,
           std::snprintf(buf, sizeof(buf), "FL%d", fl);
           return buf;
         };
+        // Handoff continuity: if the pilot already has an active cleared
+        // altitude (initial radar-contact clearance, SID step-up, en-route
+        // step-up), reuse it — the new controller must NOT issue a
+        // contradictory clearance on check-in. Real ATC preserves the
+        // previous sector's clearance. See
+        // feedback_handoff_clearance_continuity. Concrete regression this
+        // fixes: LIMF -> Milan intermediate handoff during SID climb.
+        // Pilot cleared to FL210 by initial reply; Milan check-in produced
+        // "climb FL80" because nearest_airport had drifted to LIVV
+        // (a small field) and the phase-default computation reset to
+        // (init=5000 + sid_min=11000)/2 = 8000 = FL80 — a reversal of
+        // the pilot's climb clearance. Fix: use the current cleared
+        // altitude when set; only fall through to phase-default on the
+        // very first radar contact (before any climb clearance).
+        const int current_cleared_ft = engine::current_cleared_alt_ft();
+        if (current_cleared_ft > 0) {
+          const int ta = ctx.transition_alt_ft > 0 ? ctx.transition_alt_ft
+                                                   : 5000;
+          char buf[16];
+          if (current_cleared_ft >= ta)
+            std::snprintf(buf, sizeof(buf), "FL%d",
+                          current_cleared_ft / 100);
+          else
+            std::snprintf(buf, sizeof(buf), "%d feet", current_cleared_ft);
+          return buf;
+        }
         if (ctx.nearest_airport_id == "LFLP") {
           if (ctx.active_runway == "04") {
             const std::string &fix = ctx.ifr_sid_last_fix.empty()
@@ -485,7 +511,24 @@ std::map<std::string, std::string> build_vars(const PilotMessage &msg,
                           ? ctx.ifr_sid_min_alt_ft
                           : init_ft + 6000;
         int mid_ft = (init_ft + sid_min) / 2;
-        return fl_str(((mid_ft + 999) / 1000) * 10);
+        int computed_fl = ((mid_ft + 999) / 1000) * 10;
+        // Never issue a climb to an altitude the aircraft has already
+        // climbed past. After a mid-climb handoff + check-in the state
+        // ping-pongs (RADAR_CONTACT -> EN_ROUTE -> RADAR_CONTACT), which
+        // zeroes the cleared-altitude statics, so current_cleared_alt_ft()
+        // returned 0 above and we fell through to this phase-default
+        // midpoint. On a genuine first radar contact the aircraft is low
+        // and computed_fl sits above it (fine). On a re-check-in it sits
+        // BELOW the aircraft (e.g. FL80 while climbing through FL156 to
+        // filed cruise FL220 -- LIMF -> LFLP 2026-07-09 "climb FL80"),
+        // which reads as a descent. In that case fall back to the filed
+        // cruise FL, the pilot's actual target. fl_str still caps at cruise.
+        if (ctx.ifr_cruise_alt_ft > 0) {
+          const int cur_fl = static_cast<int>(ctx.pressure_alt_ft) / 100;
+          if (computed_fl < cur_fl)
+            return fl_str(ctx.ifr_cruise_alt_ft / 100);
+        }
+        return fl_str(computed_fl);
       }()},
       // {ifr_departure_constraint}: optional departure constraint phrase inserted
       // after {ifr_initial_altitude} in the clearance template.
@@ -575,12 +618,16 @@ std::map<std::string, std::string> build_vars(const PilotMessage &msg,
         return buf;
       }()},
       // {ifr_departure_contact}: post-departure frequency instruction for the
-      // takeoff clearance. Expands to ", passing Xft, contact Approach on Y.YYY"
-      // when ctr_departure_contact_alt_ft > 0 and an Approach/Departure frequency
-      // exists; empty otherwise (plain "cleared for takeoff" with no follow-on).
+      // takeoff clearance. Standard ICAO / EUROCONTROL phraseology gives the
+      // pilot the next controller + frequency, no "passing X ft" phrase —
+      // the actual CTR-exit moment is detected server-side by
+      // poll_departure_handoff() via 3D polygon containment (whichever
+      // comes first: ceiling OR lateral boundary), and the state advances
+      // silently. Was previously ", passing Xft QNH Y, contact Z on F"
+      // with a hard-coded 3000 ft — misleading for CTRs with different
+      // ceilings (LSZH 3000, LFPO 4500, LFLP 3500, LIMF 3500).
+      // Empty result when no Approach/Departure freq is available.
       {"ifr_departure_contact", [&]() -> std::string {
-        int alt = flight_phase::get_ifr_defaults().ctr_departure_contact_alt_ft;
-        if (alt <= 0) return "";
         float freq = ctx.airport_freqs.first_mhz(FT::DEPARTURE);
         if (freq < 100.0f) freq = ctx.airport_freqs.first_mhz(FT::APPROACH);
         if (freq < 100.0f) return "";
@@ -592,6 +639,12 @@ std::map<std::string, std::string> build_vars(const PilotMessage &msg,
           return ctx.airport_freqs.first_name(FT::APPROACH);
         }();
         const std::string facility_name = [&]() -> std::string {
+          // Strip trailing " APP" / " DEP" / " CTR" / " GND" / " TWR" (with
+          // leading space — airport prefix + suffix). Also handle the bare
+          // form ("APP", "DEP", etc.) where apt.dat has no airport prefix
+          // at all (LIMF has row `1054 12110 APP` — without the leading
+          // space the strip loop leaves "APP" untouched, and later
+          // title-case + append " Approach" produces "App Approach").
           static const char *kSuf[] = {" APP", " DEP", " CTR", " GND", " TWR", nullptr};
           std::string loc = loc_raw;
           for (int i = 0; kSuf[i]; ++i) {
@@ -601,9 +654,29 @@ std::map<std::string, std::string> build_vars(const PilotMessage &msg,
               loc = loc.substr(0, loc.size() - s.size());
               break;
             }
+            // Bare suffix case (no airport prefix).
+            std::string bare = s.substr(1);
+            if (loc == bare) {
+              loc.clear();
+              break;
+            }
           }
-          if (loc.empty())
+          if (loc.empty()) {
+            // No airport prefix in apt.dat. Fall back to the nearest-airport
+            // NAME (city only) so we get "Torino Approach" instead of the
+            // generic "Approach".
+            std::string apt = ctx.nearest_airport_name;
+            auto sp = apt.find_first_of(" -");
+            if (sp != std::string::npos) apt = apt.substr(0, sp);
+            if (!apt.empty()) {
+              // Title-case the city (first letter upper, rest lower).
+              apt[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(apt[0])));
+              for (std::size_t i = 1; i < apt.size(); ++i)
+                apt[i] = static_cast<char>(std::tolower(static_cast<unsigned char>(apt[i])));
+              return apt + (ctx.airport_freqs.has(FT::DEPARTURE) ? " Departure" : " Approach");
+            }
             return ctx.airport_freqs.has(FT::DEPARTURE) ? "Departure" : "Approach";
+          }
           bool cap = true;
           for (char &c : loc) {
             if (c == ' ') { cap = true; }
@@ -615,15 +688,30 @@ std::map<std::string, std::string> build_vars(const PilotMessage &msg,
         // Cache the departure label so poll_departure_handoff() can activate
         // it later — even if the nearest airport changes en-route and loses
         // its apt.dat frequency entry by then.
-        // Guard: only cache when generating a real ATC response, not when
+        // Guard 1: only cache when generating a real ATC response, not when
         // build_vars is called from the UI hints panel (every frame).
+        // Guard 2: do NOT overwrite an existing pending handoff to a
+        // DIFFERENT frequency. build_vars() evaluates every template lambda
+        // eagerly, so this side effect fires even when the plugin is
+        // rendering an airborne readback response that has nothing to do
+        // with departure freq caching. Without guard 2, an airborne pilot's
+        // readback on the OLD Approach freq would clobber a more-recent
+        // intermediate handoff (Phase 2.8 Milan 118.675 -> back to Torino
+        // 121.100), then the pilot's check-in on the new freq gets rejected
+        // by the wrong-freq guard. LIMF->LFLP 2026-07-07 in-sim regression.
         if (apply_side_effects) {
-          engine::set_pending_departure_label(facility_name);
-          engine::set_pending_handoff_freq(freq);
+          const float existing = engine::pending_handoff_freq();
+          const bool safe_to_cache =
+              existing < 100.0f ||                     // uninitialised
+              std::fabs(existing - freq) < 0.005f;     // same freq — idempotent
+          if (safe_to_cache) {
+            engine::set_pending_departure_label(facility_name);
+            engine::set_pending_handoff_freq(freq);
+          }
         }
         char buf[128];
-        std::snprintf(buf, sizeof(buf), ", passing %dft QNH %d, contact %s on %.3f",
-                      alt, ctx.qnh_hpa, facility_name.c_str(), freq);
+        std::snprintf(buf, sizeof(buf), ", QNH %d, contact %s on %.3f",
+                      ctx.qnh_hpa, facility_name.c_str(), freq);
         return buf;
       }()},
       // {holding_point}: "holding point Alpha, runway 28" when apt.dat taxiway data
@@ -917,6 +1005,7 @@ bool check_handoff_reissue(const PilotMessage &msg, const XPlaneContext &ctx,
   bool ifr_handoff = (state_str == "IFR/FREQ_HANDOFF"        ||
                       state_str == "IFR/ENROUTE_CRUISE"      ||
                       state_str == "IFR/DESCENT"             ||
+                      state_str == "IFR/ARRIVAL"             ||
                       state_str == "IFR/APPROACH_CONTACT"    ||
                       state_str == "IFR/APPROACH_DESCENT"    ||
                       state_str == "IFR/APPROACH_TOWER"      ||
@@ -1017,7 +1106,9 @@ bool check_freq_precondition(const PilotMessage &msg, const XPlaneContext &ctx,
   {
     const std::string s = atc_state_machine::state_name(internal::get_state_ref());
     if (s == "IFR/RADAR_CONTACT"    || s == "IFR/ENROUTE_CRUISE" ||
-        s == "IFR/FREQ_HANDOFF"     || s == "IFR/APPROACH_CONTACT" ||
+        s == "IFR/EN_ROUTE"         || s == "IFR/DESCENT"         ||
+        s == "IFR/ARRIVAL"          || s == "IFR/FREQ_HANDOFF"     ||
+        s == "IFR/APPROACH_CONTACT" ||
         s == "IFR/APPROACH_DESCENT" || s == "IFR/APPROACH_TOWER"  ||
         s == "IFR/LANDING_CLEARED")
       return false;

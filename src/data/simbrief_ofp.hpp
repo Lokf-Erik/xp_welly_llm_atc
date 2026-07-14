@@ -25,6 +25,26 @@ struct NavlogFix {
   double lon = 0.0;
   int alt_ft = 0;           // planned altitude at this fix (feet)
   bool is_sid_star = false; // true when part of SID or STAR
+  // Flight-phase classification from SimBrief's own optimizer:
+  //   "CLB" - climb from origin to top-of-climb
+  //   "CRZ" - level cruise (may include filed step-downs)
+  //   "DSC" - descent from TOD to destination
+  // Empty when SimBrief did not populate the field.  Lets consumers
+  // distinguish mid-climb altitude artifacts from genuine mid-cruise
+  // step-downs — e.g. KUKEV=19600ft CLB (skip) vs GOLEB=21000ft CRZ
+  // (honor as filed step-down from FL220 to FL210).
+  std::string stage;
+};
+
+// One explicit step marker parsed from the filed ICAO route string
+// (general.route). Format in the raw route: "<FIX>/N<spd>F<FL>", e.g.
+// "BANKO/N0307F210" = at BANKO, step to 307 kts / FL210.  ATC drives the
+// enroute FL clearances from this list — not from the SimBrief-expanded
+// navlog altitudes, which include intermediate airway fixes and per-fix
+// vertical-profile altitudes that don't correspond to filed ATC step points.
+struct RouteStep {
+  std::string ident; // fix where the step becomes effective, e.g. "BANKO"
+  int cruise_fl = 0; // FL after this step, e.g. 210
 };
 
 struct OfpData {
@@ -44,6 +64,15 @@ struct OfpData {
   // and by Phase 3/4 for cross-track deviation detection and direct-to
   // shortcuts.
   std::vector<NavlogFix> navlog;
+  // Raw ICAO route string as returned by SimBrief in general.route
+  // (e.g. "DCT KUKEV L50 BANKO/N0307F210 Y52 SALEV DCT"). Empty when
+  // absent from the OFP. Retained verbatim so the enroute step parser
+  // and log diagnostics can reference the exact filed sequence.
+  std::string raw_route;
+  // Explicit FL step markers extracted from raw_route. Empty for
+  // single-cruise-FL flights (no /F markers filed) — in that case
+  // poll_enroute falls back to navlog-driven behavior.
+  std::vector<RouteStep> route_steps;
   // Optional: force a specific approach procedure (e.g. "I04LZ") instead of
   // letting best_approach() pick one by visibility priority.  Used by the
   // atc_ifr_repl test harness and by future UI "preferred approach" overrides.
@@ -54,6 +83,12 @@ struct OfpData {
 void set(const OfpData &ofp); // called from simbrief_client after fetch
 OfpData get();                // called from xplane_context_runtime
 void clear();                 // call on new flight / user request
+
+// Parse the raw ICAO route string (general.route) for explicit FL step
+// markers ("<FIX>/N<spd>F<FL>", "<FIX>/M<mach>F<FL>", "<FIX>/K<kmh>F<FL>").
+// Returns one RouteStep per step marker in filed order. SDK-free — used
+// from simbrief_client (populating OfpData) and directly from unit tests.
+std::vector<RouteStep> parse_route_steps(const std::string &raw_route);
 
 } // namespace simbrief_ofp
 

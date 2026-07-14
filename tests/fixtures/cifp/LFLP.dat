@@ -12,3 +12,12 @@ SID:010,5,LTP2A,RW22,SOCOF,LF,E,A,E   , ,   ,CF, ,CBY,LF,D, ,      ,0942,0111,21
 SID:020,5,LTP2A,RW22,LTPNO,LF,E,A, , , ,TF, , , , , , , , , , ,+, , , , , , , , , , , , , ;
 SID:010,5,ROMA2A,RW22,SOCOF,LF,E,A,E   , ,   ,CF, ,CBY,LF,D, ,      ,0942,0111,2170,0050, ,     ,     ,06500, ,   ,    ,   , , , , , , , , ;
 SID:020,5,ROMA2A,RW22,ROMAM,LF,E,A, , , ,TF, , , , , , , , , , ,+, , , , , , , , , , , , , ;
+APPCH:010,A,R04-Y,04,PIRUV,LF,E,A, , , ,IF, , , , , , , , , , , , , , , , , , , , , , , ;
+APPCH:010,A,R04-Z,04,PIRUV,LF,E,A, , , ,IF, , , , , , , , , , , , , , , , , , , , , , , ;
+STAR:010,5,SALE3P,ALL,SALEV,LF,E,A,E C , ,   ,IF, , , , , ,      ,    ,    ,    ,    , ,     ,     ,     , ,   ,    ,   , , , , , , , , ;
+STAR:020,5,SALE3P,ALL,PINOT,LF,E,A,E   , ,   ,TF, , , , , ,      ,    ,    ,    ,    , ,     ,     ,     , ,   ,    ,   , , , , , , , , ;
+STAR:030,5,SALE3P,ALL,COLLO,LF,E,A,E C , ,   ,TF, , , , , ,      ,    ,    ,    ,    , ,     ,     ,     , ,   ,    ,   , , , , , , , , ;
+STAR:040,5,SALE3P,ALL,LUVOB,LF,E,A,E   , ,   ,TF, , , , , ,      ,    ,    ,    ,    ,-,FL090,     ,     ,-,210,    ,   , , , , , , , , ;
+STAR:050,5,SALE3P,ALL,KENZO,LF,E,A,E   , ,   ,TF, , , , , ,      ,    ,    ,    ,    , ,     ,     ,     , ,   ,    ,   , , , , , , , , ;
+STAR:060,5,SALE3P,ALL,GOVNA,LF,E,A,E   , ,   ,TF, , , , , ,      ,    ,    ,    ,    ,B,FL090,06500,     ,-,210,    ,   , , , , , , , , ;
+STAR:070,5,SALE3P,ALL,PIRUV,LF,E,A,EECH, ,   ,TF, , , , , ,      ,    ,    ,    ,    ,+,06500,     ,     , ,   ,    ,   , , , , , , , , ;

@@ -1,0 +1,58 @@
+{
+  "_comment": "IFR arrival via ABDI8R STAR — LFMN ILS 04L. Arrival-only: departure omitted because apply_field does not support transponder_code, so check_squawk_at_holding_point() cannot be satisfied from JSON. The departure half (LFLP SID ROMA2A, squawk, holding-point check-in) is exercised by ifr_lflp_departure_sim.json. This scenario covers the arrival half: ABDI8R STAR entry check-in → radar contact → STAR step-down simulation → Tower landing clearance → Ground handoff. Regular airport (Ground 121.750): runway vacated triggers Ground freq handoff (contrast: nostar scenario uses tower_only=true → taxi instruction). LFMN APP 120.025 / TWR 118.700 / GND 121.750.",
+  "name": "IFR arrival — LFMN ABDI8R STAR, ILS 04L",
+  "region": "EU",
+  "context": {
+    "airport": "LFMN",
+    "airport_name": "NICE COTE D AZUR",
+    "towered": true,
+    "tower_only": false,
+    "no_atis": false,
+    "on_ground": false,
+    "com": 120.025,
+    "freq_type": "APPROACH",
+    "runway": "04L",
+    "altitude_ft": 11000,
+    "agl_ft": 10987,
+    "groundspeed_kt": 240,
+    "heading": 220,
+    "lat": 43.850,
+    "lon": 7.400,
+    "airport_lat": 43.6584,
+    "airport_lon": 7.2158,
+    "callsign": "Fox Golf Bravo Charlie Delta",
+    "ifr_destination": "LFMN",
+    "ifr_cruise_alt_ft": 27000,
+    "freqs": [
+      { "mhz": 120.025, "type": "APPROACH", "name": "NICE APP" },
+      { "mhz": 118.700, "type": "TOWER",    "name": "NICE TWR" },
+      { "mhz": 121.750, "type": "GROUND",   "name": "NICE GND" }
+    ]
+  },
+  "say": [
+    { "note": "0 — Cruise FL270 via ROMA2A SID. Simulate en-route phase via set_state.",
+      "set_state": "IFR/APPROACH_CONTACT" },
+
+    { "note": "1 — Nice Approach check-in at ABDI8R STAR entry (FL110). Expect radar contact.",
+      "text": "Nice Approach Fox Golf Bravo Charlie Delta passing flight level one one zero descending",
+      "expect": "radar contact",
+      "expect_state": "IFR/APPROACH_DESCENT" },
+
+    { "note": "2 — STAR step-downs complete (ABDIL->TIPIK->MUS->BISBO->FN04A). ATC issued 'contact Tower'. Simulate via set_state.",
+      "set_state": "IFR/APPROACH_TOWER" },
+
+    { "set": { "com": "118.700", "freq_type": "TOWER", "altitude_ft": "1800", "agl_ft": "1787", "groundspeed_kt": "145", "heading": "40", "lat": "43.690", "lon": "7.250" } },
+
+    { "note": "3 — Tower check-in: established ILS 04L. Expect landing clearance.",
+      "text": "Nice Tower Fox Golf Bravo Charlie Delta established ILS runway zero four left",
+      "expect": "cleared to land",
+      "expect_state": "IFR/LANDING_CLEARED" },
+
+    { "set": { "on_ground": true, "agl_ft": 0, "altitude_ft": 13, "groundspeed_kt": 8 } },
+
+    { "note": "4 — Runway vacated. Regular airport (Ground 121.750): expect contact Ground handoff.",
+      "text": "Fox Golf Bravo Charlie Delta runway vacated",
+      "expect": "ground",
+      "expect_state": "IDLE" }
+  ]
+}

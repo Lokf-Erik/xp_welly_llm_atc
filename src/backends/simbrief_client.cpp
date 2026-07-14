@@ -8,11 +8,13 @@
 #include "backends/simbrief_client.hpp"
 #include "core/logging.hpp"
 #include "data/simbrief_ofp.hpp"
+#include "persistence/model_paths.hpp"
 
 #include <curl/curl.h>
 #include <json.hpp>
 
 #include <atomic>
+#include <cctype>
 #include <cstdio>
 #include <sstream>
 #include <string>
@@ -65,6 +67,25 @@ void do_fetch(int pilot_id) {
     g_last_error = curl_easy_strerror(res);
     g_status.store(FetchStatus::FAILED);
     return;
+  }
+
+  // Persist the raw JSON response for diagnostics before parsing.  The
+  // parser reads only a subset of the SimBrief keys (~14 out of ~50+),
+  // so any question of the form "did SimBrief actually send field X?"
+  // is settled by inspecting this file rather than guessing.  Overwrites
+  // on every fetch; failure is silent (best-effort).
+  {
+    const std::string dump_path =
+        model_paths::plugin_root() + "/Resources/last_ofp.json";
+    if (FILE *fp = std::fopen(dump_path.c_str(), "w")) {
+      std::fwrite(body.data(), 1, body.size(), fp);
+      std::fclose(fp);
+      logging::info("[simbrief] raw JSON dumped to %s (%zu bytes)",
+                    dump_path.c_str(), body.size());
+    } else {
+      logging::info("[simbrief] failed to open %s for raw-JSON dump",
+                    dump_path.c_str());
+    }
   }
 
   try {
@@ -217,6 +238,7 @@ void do_fetch(int pilot_id) {
           fix.ident = f.value("ident", std::string{});
           fix.via_airway = f.value("via_airway", std::string{});
           fix.is_sid_star = (f.value("is_sid_star", std::string{"0"}) == "1");
+          fix.stage = f.value("stage", std::string{});
           try {
             auto lat_s = f.value("pos_lat", std::string{});
             auto lon_s = f.value("pos_long", std::string{});
@@ -259,7 +281,76 @@ void do_fetch(int pilot_id) {
       }
     }
 
-    ofp.valid = !ofp.destination_icao.empty();
+    // Filed ICAO route + explicit FL step markers.  SimBrief stores TWO
+    // route representations:
+    //   general.route  — pilot-friendly, step markers STRIPPED
+    //   atc.route      — ATC/ICAO format, keeps "<FIX>/N<spd>F<FL>" markers
+    // Prefer atc.route so filed step-downs (e.g. BANKO/N0307F210) reach the
+    // enroute walker.  Fall back to general.route if atc.route absent, and
+    // in either case try general.stepclimb_string as a secondary source
+    // (format: "<orig>/<FL>/<fix>/<FL>...").  Examples of atc.route seen:
+    //   "N0311F220 DCT KUKEV L50 BANKO/N0307F210 Y52 SALEV DCT"
+    //   "ODIKI DCT LFMN"                              (no step markers)
+    //   "N0385F220 KUKEV L50 BANKO/N0307F210 Y52 SALEV/N0378F210 SALEV3P LFLP"
+    {
+      auto atc = j.value("atc", json::object());
+      std::string atc_route = atc.value("route", std::string{});
+      std::string gen_route = gen.value("route", std::string{});
+      ofp.raw_route = !atc_route.empty() ? atc_route : gen_route;
+      ofp.route_steps = simbrief_ofp::parse_route_steps(ofp.raw_route);
+
+      // Secondary source: general.stepclimb_string
+      //   "LIMF/0220/BANKO/0210"  = cruise FL220 from LIMF, step to FL210 at BANKO
+      // Format: alternating <token>/<4-digit FL> pairs where token is either
+      // the origin ICAO (first entry) or a step-fix ident.  Parse the fix/FL
+      // pairs into route_steps only when the primary source produced nothing.
+      if (ofp.route_steps.empty()) {
+        std::string sc = gen.value("stepclimb_string", std::string{});
+        if (!sc.empty()) {
+          std::vector<std::string> tokens;
+          std::string cur;
+          for (char c : sc) {
+            if (c == '/') { if (!cur.empty()) tokens.push_back(cur); cur.clear(); }
+            else cur += c;
+          }
+          if (!cur.empty()) tokens.push_back(cur);
+          // Walk pairs skipping the leading origin entry.  A valid pair
+          // is (fix_ident, 4-digit FL).  Reject the first token as it's
+          // the origin ICAO, not a step fix.
+          for (size_t i = 2; i + 1 < tokens.size(); i += 2) {
+            const std::string &ident = tokens[i];
+            const std::string &fl4   = tokens[i + 1];
+            if (ident.empty() || ident.size() > 5) continue;
+            if (fl4.size() != 4) continue;
+            bool ok = true;
+            for (char c : fl4)
+              if (!std::isdigit(static_cast<unsigned char>(c))) { ok = false; break; }
+            if (!ok) continue;
+            simbrief_ofp::RouteStep step;
+            step.ident = ident;
+            // "0210" -> 210, "0080" -> 80.  Filed FLs are 3-digit.
+            step.cruise_fl = std::stoi(fl4);
+            ofp.route_steps.push_back(std::move(step));
+          }
+        }
+      }
+    }
+
+    // An IFR OFP MUST carry an enroute cruise altitude.  SimBrief exposes
+    // it via general.cruise_altitude (or initial_altitude for simple
+    // plans); if both are missing/zero the OFP is malformed for IFR use
+    // and cannot drive ATC — the plugin would fall back to guessing from
+    // current MSL, which is not a real clearance.  Reject upfront and
+    // surface a loud warning so the pilot refiles.
+    ofp.valid = !ofp.destination_icao.empty() && ofp.cruise_alt_ft > 0;
+    if (!ofp.destination_icao.empty() && ofp.cruise_alt_ft <= 0) {
+      g_last_error = "OFP missing cruise altitude (invalid for IFR)";
+      logging::info(
+          "[simbrief] REJECT OFP %s -> %s: no cruise altitude filed "
+          "(general.cruise_altitude=0). An IFR flight plan must specify "
+          "the cruise FL; refile in SimBrief.",
+          ofp.origin_icao.c_str(), ofp.destination_icao.c_str());
+    }
     simbrief_ofp::set(ofp);
 
     logging::info(
@@ -273,7 +364,50 @@ void do_fetch(int pilot_id) {
         ofp.aircraft_reg.empty() ? "?" : ofp.aircraft_reg.c_str(),
         ofp.aircraft_type.empty() ? "?" : ofp.aircraft_type.c_str(),
         ofp.navlog.size());
-    g_status.store(FetchStatus::SUCCESS);
+
+    // Diagnostic dump: raw filed route + extracted step markers + per-fix
+    // navlog with SimBrief's computed altitudes. Enroute FL-clearance bugs
+    // are almost always caused by SimBrief serving unexpected altitude_feet
+    // values or the plugin misidentifying step points, so both sides need
+    // to be visible in every log.
+    if (!ofp.raw_route.empty())
+      logging::info("[simbrief] route (atc): %s", ofp.raw_route.c_str());
+    {
+      auto atc_dbg = j.value("atc", json::object());
+      std::string sc_dbg = gen.value("stepclimb_string", std::string{});
+      if (!sc_dbg.empty())
+        logging::info("[simbrief] stepclimb_string: %s", sc_dbg.c_str());
+      std::string gen_route_dbg = gen.value("route", std::string{});
+      if (!gen_route_dbg.empty() && gen_route_dbg != ofp.raw_route)
+        logging::info("[simbrief] route (general, sanitized): %s",
+                      gen_route_dbg.c_str());
+    }
+    if (!ofp.route_steps.empty()) {
+      std::string steps_str;
+      for (const auto &s : ofp.route_steps) {
+        if (!steps_str.empty()) steps_str += ", ";
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "%s=FL%d", s.ident.c_str(),
+                      s.cruise_fl);
+        steps_str += buf;
+      }
+      logging::info("[simbrief] filed FL steps: %s", steps_str.c_str());
+    } else {
+      logging::info("[simbrief] filed FL steps: none (single cruise FL)");
+    }
+    for (size_t i = 0; i < ofp.navlog.size(); ++i) {
+      const auto &f = ofp.navlog[i];
+      logging::info("[simbrief] navlog[%zu] %-8s via=%-6s stage=%-3s alt=%5dft%s",
+                    i,
+                    f.ident.empty() ? "?" : f.ident.c_str(),
+                    f.via_airway.empty() ? "-" : f.via_airway.c_str(),
+                    f.stage.empty() ? "-" : f.stage.c_str(),
+                    f.alt_ft, f.is_sid_star ? " SID/STAR" : "");
+    }
+    // Surface the OFP-rejection to the fetch-status UI so the pilot sees
+    // the error instead of a silent "loaded" state that then refuses to
+    // drive IFR.
+    g_status.store(ofp.valid ? FetchStatus::SUCCESS : FetchStatus::FAILED);
 
   } catch (const std::exception &e) {
     g_last_error = std::string("parse error: ") + e.what();

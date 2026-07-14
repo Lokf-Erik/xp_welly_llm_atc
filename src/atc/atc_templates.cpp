@@ -138,8 +138,23 @@ TemplateEntry lookup(bool is_towered, const std::string &state,
 
   const char *type = is_towered ? "towered" : "uncontrolled";
 
-  if (!templates_.contains(type) || !templates_[type].contains(state))
-    return fallback;
+  if (!templates_.contains(type) || !templates_[type].contains(state)) {
+    // IFR airborne states (IFR/ENROUTE_CRUISE, IFR/DESCENT, IFR/APPROACH_*,
+    // ...) are enroute/descent/approach phases NOT tied to the nearest
+    // field's tower status. nearest_airport_id drifts to whatever airfield
+    // is closest — a heliport mid-descent flips is_towered to false, and
+    // these states live only in the "towered" section, so the lookup would
+    // return the {IDLE} fallback and wrongly drop the flight to IDLE on a
+    // simple readback (LIMF -> LFLP 2026-07-10 regression: FL140 readback
+    // -> IDLE -> arrival collapse). Fall back to the towered section for
+    // IFR/* states before giving up.
+    const bool ifr_state = state.rfind("IFR/", 0) == 0;
+    if (ifr_state && templates_.contains("towered") &&
+        templates_["towered"].contains(state))
+      type = "towered";
+    else
+      return fallback;
+  }
 
   auto &state_obj = templates_[type][state];
 

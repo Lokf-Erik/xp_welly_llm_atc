@@ -288,10 +288,16 @@ static std::string make_cifp_path(const std::string &cifp_dir,
 
 // ── Approach helpers ───────────────────────────────────────────────────
 
-// Parse "I04LY" → type_char='I', runway="04L", suffix="Y"
+// Parse "I04LY" → type_char='I', runway="04L", suffix='Y'.  Suffix is the
+// trailing variant letter (Z, Y, X, W, ...) — set to 0 when the designator
+// has no variant letter (e.g. "I04L").  ICAO convention: multiple approaches
+// of the same type on the same runway are published Z first, then Y, X, ...
+// so a Z variant is the primary / preferred one — best_approach uses this
+// to tie-break same-type-same-runway candidates.
 static bool parse_approach_designator(const std::string &des,
                                        char &type_char,
-                                       std::string &runway) {
+                                       std::string &runway,
+                                       char &suffix) {
   if (des.size() < 3) return false;
   type_char = des[0];
   size_t i = 1;
@@ -299,7 +305,22 @@ static bool parse_approach_designator(const std::string &des,
   if (i < des.size() &&
       (des[i] == 'L' || des[i] == 'R' || des[i] == 'C')) ++i;
   runway = des.substr(1, i - 1);
+  // Optional dash separator between runway and variant letter — some
+  // AIRAC vendors emit "R04-Y" instead of "R04Y".  Skip a single dash
+  // before scanning for the trailing variant letter.
+  if (i < des.size() && des[i] == '-') ++i;
+  suffix = static_cast<char>(
+      (i < des.size() && std::isalpha(static_cast<unsigned char>(des[i])))
+          ? des[i]
+          : 0);
   return !runway.empty();
+}
+// 3-arg overload for call sites that don't care about the variant letter.
+static bool parse_approach_designator(const std::string &des,
+                                       char &type_char,
+                                       std::string &runway) {
+  char unused = 0;
+  return parse_approach_designator(des, type_char, runway, unused);
 }
 
 // Visibility-driven priority: RNAV preferred in normal conditions,
@@ -712,7 +733,7 @@ ApproachInfo best_approach(const std::string &cifp_dir,
     return {};
   }
 
-  int best_prio = -1;
+  int best_score = -1;
   ApproachInfo best;
 
   std::string line;
@@ -723,16 +744,22 @@ ApproachInfo best_approach(const std::string &cifp_dir,
     if (f.size() < 3) continue;
 
     std::string des = trim(f[2]);
-    char type_char = 0;
+    char type_char = 0, suffix = 0;
     std::string rwy;
-    if (!parse_approach_designator(des, type_char, rwy))
+    if (!parse_approach_designator(des, type_char, rwy, suffix))
       continue;
     if (rwy != dest_runway)
       continue;
 
     int prio = approach_priority(type_char, visibility_m);
-    if (prio > best_prio) {
-      best_prio        = prio;
+    // Composite score: type priority dominates; variant letter breaks
+    // ties within same type+runway.  ICAO convention is Z-first-published
+    // so Z is the primary/preferred variant — Z > Y > X > ... > (none).
+    int suffix_score =
+        suffix ? std::toupper(static_cast<unsigned char>(suffix)) - 'A' + 1 : 0;
+    int score = prio * 100 + suffix_score;
+    if (score > best_score) {
+      best_score       = score;
       best.type_str    = approach_type_str(type_char);
       best.runway      = rwy;
       best.designator  = des;
@@ -747,6 +774,18 @@ ApproachInfo best_approach(const std::string &cifp_dir,
   std::lock_guard<std::mutex> lk(g_alt_cache_mutex);
   g_approach_cache[cache_key] = best;
   return best;
+}
+
+// ── approach_suffix ─────────────────────────────────────────────────────
+
+// Public accessor: parses the designator and returns the variant letter,
+// or 0 when the designator has no variant.  Handles the "R04-Y" dash form
+// via parse_approach_designator's suffix scan (dash is skipped).
+char approach_suffix(const std::string &designator) {
+  char type_char = 0, suffix = 0;
+  std::string rwy;
+  parse_approach_designator(designator, type_char, rwy, suffix);
+  return suffix;
 }
 
 // ── approach_by_designator ──────────────────────────────────────────────
@@ -786,6 +825,38 @@ ApproachInfo approach_by_designator(const std::string &cifp_dir,
   logging::info("[cifp] %s approach_by_designator %s -> not found",
                 icao.c_str(), designator.c_str());
   return {};
+}
+
+// ── approach_terminates_at_runway ───────────────────────────────────────
+
+// True if the approach's legs include a leg to the runway threshold (fix
+// "RWxx" or subsection "G"). Straight-in instrument approaches with vertical
+// guidance to a DA terminate at the runway; MDA / visual-final approaches
+// (e.g. LFMN R04LA, R22LD) end at fixes + a missed-approach hold and never
+// reach the runway -- the pilot flies the last segment visually. The CIFP
+// carries no explicit DA/MDA value, so runway-leg presence is the reliable
+// structural proxy. Used to pick "report established" (true = DA/instrument)
+// vs "report runway in sight" (false = MDA/visual). Defaults to true
+// (instrument) when data is unavailable -- the conservative choice.
+bool approach_terminates_at_runway(const std::string &cifp_dir,
+                                   const std::string &icao,
+                                   const std::string &designator) {
+  if (cifp_dir.empty() || icao.empty() || designator.empty())
+    return true;
+  std::ifstream in(make_cifp_path(cifp_dir, icao));
+  if (!in.good())
+    return true;
+  std::string line;
+  while (std::getline(in, line)) {
+    if (line.size() < 6 || line.compare(0, 6, "APPCH:") != 0)
+      continue;
+    auto f = split_csv(line);
+    if (f.size() < 8) continue;
+    if (trim(f[2]) != designator) continue;
+    if (trim(f[4]).rfind("RW", 0) == 0) return true; // leg to runway threshold
+    if (trim(f[7]) == "G") return true;              // subsection G = runway
+  }
+  return false; // no runway leg -> visual / MDA last segment
 }
 
 // ── best_runway_for_approach ────────────────────────────────────────────
@@ -1129,11 +1200,13 @@ static std::unordered_map<std::string, std::vector<StarWaypoint>>
 
 std::vector<StarWaypoint> star_waypoints(const std::string &cifp_dir,
                                           const std::string &icao,
-                                          const std::string &star_name) {
+                                          const std::string &star_name,
+                                          bool constrained_only) {
   if (cifp_dir.empty() || icao.empty() || star_name.empty())
     return {};
 
-  std::string cache_key = icao + ":STARWPTS:" + star_name;
+  std::string cache_key =
+      icao + ":STARWPTS:" + star_name + (constrained_only ? ":C" : ":ALL");
   {
     std::lock_guard<std::mutex> lk(g_alt_cache_mutex);
     auto it = g_star_waypoints_cache.find(cache_key);
@@ -1176,8 +1249,8 @@ std::vector<StarWaypoint> star_waypoints(const std::string &cifp_dir,
       catch (...) { speed_kt = 0; }
     }
 
-    if (alt.feet == 0 && speed_kt == 0)
-      continue; // no constraint — skip
+    if (constrained_only && alt.feet == 0 && speed_kt == 0)
+      continue; // no constraint — skip (full route table keeps it)
 
     StarWaypoint wp;
     wp.ident      = wpt;
@@ -1269,14 +1342,16 @@ std::vector<StarWaypoint> approach_procedure_waypoints(
     const std::string &cifp_dir,
     const std::string &icao,
     const std::string &approach_designator,
-    const std::string &transition_ident) {
+    const std::string &transition_ident,
+    bool constrained_only) {
 
   if (cifp_dir.empty() || icao.empty() || approach_designator.empty() ||
       transition_ident.empty())
     return {};
 
-  const std::string cache_key =
-      icao + ":APPCHWPTS:" + approach_designator + ":" + transition_ident;
+  const std::string cache_key = icao + ":APPCHWPTS:" + approach_designator +
+                                ":" + transition_ident +
+                                (constrained_only ? ":C" : ":ALL");
   {
     std::lock_guard<std::mutex> lk(g_alt_cache_mutex);
     auto it = g_star_waypoints_cache.find(cache_key);
@@ -1336,7 +1411,6 @@ std::vector<StarWaypoint> approach_procedure_waypoints(
 
     std::string alt_desc = trim(f[22]);
     CifpAlt     alt      = parse_alt(f[23]);
-    if (alt.feet == 0) continue; // no altitude constraint
 
     int speed_kt = 0;
     if (f.size() > 27) {
@@ -1344,6 +1418,12 @@ std::vector<StarWaypoint> approach_procedure_waypoints(
       try { if (!sv.empty()) speed_kt = std::stoi(sv); }
       catch (...) { speed_kt = 0; } // NOLINT(bugprone-empty-catch)
     }
+
+    // constrained_only (default): drop fixes with neither alt nor speed
+    // (matches star_waypoints; the old test dropped speed-only fixes too).
+    // Full route table (false) keeps every fix.
+    if (constrained_only && alt.feet == 0 && speed_kt == 0)
+      continue;
 
     const std::string wpt_desc8 = f.size() > 8 ? trim(f[8]) : "";
     StarWaypoint wp;

@@ -158,13 +158,19 @@ static void merge_into(nlohmann::json &base, const nlohmann::json &overlay) {
   for (auto &[key, val] : overlay.items()) {
     if (key.rfind("_comment", 0) == 0)
       continue;
-    if (!base.contains(key)) {
-      base[key] = val;
-    } else if (base[key].is_object() && val.is_object()) {
+    if (key.rfind("_note", 0) == 0)
+      continue;
+    if (base.contains(key) && base[key].is_object() && val.is_object()) {
       merge_into(base[key], val);
-    } else if (base[key].is_array() && val.is_array()) {
+    } else if (base.contains(key) && base[key].is_array() && val.is_array()) {
       for (auto &item : val)
         base[key].push_back(item);
+    } else {
+      // Key absent, OR scalar leaf (string/number/bool): overlay replaces
+      // base. The scalar-override case is required so IFR overrides of
+      // VFR-inherited fields (e.g. intent_frequency.READY_FOR_DEPARTURE.
+      // rejection) actually take effect instead of the base value winning.
+      base[key] = val;
     }
   }
 }
@@ -412,6 +418,14 @@ static void load_from_file() {
           id.value("star_entry_alt_ft", 11000);
       ifr_defaults_.approach_entry_alt_ft =
           id.value("approach_entry_alt_ft", 8000);
+      // FL120 default for EU profile (Italy/France CTA stacks to FL195),
+      // FL100 for US (TRACON typical ceiling). US profile has no
+      // ifr_defaults section, so it falls back to the struct's default
+      // (12000 ft) — override in code for US by re-checking atc_profile
+      // when reading this value. Simpler here: EU JSON provides 12000,
+      // US falls back to 10000 via a lower struct default.
+      ifr_defaults_.sid_handoff_min_alt_ft =
+          id.value("sid_handoff_min_alt_ft", 12000);
     }
 
     loaded_ = true;

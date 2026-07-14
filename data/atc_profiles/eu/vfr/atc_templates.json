@@ -34,7 +34,7 @@
         "requires_readback": true
       },
       "REQUEST_TAXI_PARKING": {
-        "response": "{callsign}, {airport} {taxi_controller}, taxi to general aviation parking via Alpha.",
+        "response": "{callsign}, {airport} {taxi_controller}, taxi to general aviation parking {nearest_taxiway}.",
         "next_state": "IDLE",
         "requires_readback": true
       },
@@ -69,7 +69,7 @@
         "requires_readback": false
       },
       "RUNWAY_VACATED_TOWER_ONLY": {
-        "response": "{callsign}, roger, taxi to general aviation apron via Alpha, report on stand.",
+        "response": "{callsign}, roger, taxi to general aviation apron {nearest_taxiway}, report on stand.",
         "next_state": "IDLE",
         "requires_readback": false
       },
@@ -298,7 +298,7 @@
         "requires_readback": false
       },
       "RUNWAY_VACATED_TOWER_ONLY": {
-        "response": "{callsign}, roger, taxi to general aviation parking via Alpha, good day.",
+        "response": "{callsign}, roger, taxi to general aviation parking {nearest_taxiway}, good day.",
         "next_state": "IDLE",
         "requires_readback": false
       },
@@ -325,12 +325,12 @@
         "requires_readback": false
       },
       "RUNWAY_VACATED_TOWER_ONLY": {
-        "response": "{callsign}, taxi to general aviation apron via Alpha, report on stand.",
+        "response": "{callsign}, taxi to general aviation apron {nearest_taxiway}, report on stand.",
         "next_state": "IDLE",
         "requires_readback": false
       },
       "REQUEST_TAXI_PARKING": {
-        "response": "{callsign}, runway vacated, taxi to general aviation parking via Alpha, good day.",
+        "response": "{callsign}, runway vacated, taxi to general aviation parking {nearest_taxiway}, good day.",
         "next_state": "IDLE",
         "requires_readback": false
       },

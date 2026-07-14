@@ -1,0 +1,47 @@
+{
+  "_comment": "IFR approach — LFMN RNP 04LA with visual last segment. Approach track (353 deg) is ~47 degrees off runway heading (040 deg): pilot cannot report 'established' on the instrument procedure and instead reports 'runway in sight' for a visual approach to the runway. Approach-only scenario starting at IFR/APPROACH_TOWER (Approach has issued 'contact Tower, runway in sight'). Verifies that 'runway in sight' parses as INITIAL_CALL_TOWER and produces a landing clearance — the same IFR/APPROACH_TOWER template handles both ILS and visual last-segment arrivals. LFMN APP 120.025 / TWR 118.700 / GND 121.750.",
+  "name": "IFR approach — LFMN RNP 04LA visual last segment",
+  "region": "EU",
+  "context": {
+    "airport": "LFMN",
+    "airport_name": "NICE COTE D AZUR",
+    "towered": true,
+    "tower_only": false,
+    "no_atis": false,
+    "on_ground": false,
+    "com": 118.700,
+    "freq_type": "TOWER",
+    "runway": "04L",
+    "altitude_ft": 2200,
+    "agl_ft": 2187,
+    "groundspeed_kt": 145,
+    "heading": 353,
+    "lat": 43.720,
+    "lon": 7.280,
+    "airport_lat": 43.6584,
+    "airport_lon": 7.2158,
+    "callsign": "Fox Golf Bravo Charlie Delta",
+    "ifr_destination": "LFMN",
+    "freqs": [
+      { "mhz": 120.025, "type": "APPROACH", "name": "NICE APP" },
+      { "mhz": 118.700, "type": "TOWER",    "name": "NICE TWR" },
+      { "mhz": 121.750, "type": "GROUND",   "name": "NICE GND" }
+    ]
+  },
+  "say": [
+    { "note": "0 — Approach issued 'contact Tower, runway in sight' (47 deg track divergence: visual segment mandatory). Jump to IFR/APPROACH_TOWER.",
+      "set_state": "IFR/APPROACH_TOWER" },
+
+    { "note": "1 — Pilot reports runway in sight. Expect landing clearance (INITIAL_CALL_TOWER -> cleared to land). Heading 353 confirms visual approach, not ILS established.",
+      "text": "Nice Tower Fox Golf Bravo Charlie Delta established visual runway zero four left",
+      "expect": "cleared to land",
+      "expect_state": "IFR/LANDING_CLEARED" },
+
+    { "set": { "on_ground": true, "agl_ft": 0, "altitude_ft": 13, "groundspeed_kt": 8 } },
+
+    { "note": "2 — Runway vacated. Regular airport: expect 'contact Ground on 121.750, good day'.",
+      "text": "Fox Golf Bravo Charlie Delta runway vacated",
+      "expect": "ground",
+      "expect_state": "IDLE" }
+  ]
+}

@@ -271,6 +271,8 @@ const char *state_name(ATCState state) {
     return "IFR/ENROUTE_CRUISE";
   case ATCState::IFR_DESCENT:
     return "IFR/DESCENT";
+  case ATCState::IFR_ARRIVAL:
+    return "IFR/ARRIVAL";
   case ATCState::IFR_APPROACH_CONTACT:
     return "IFR/APPROACH_CONTACT";
   case ATCState::IFR_APPROACH_DESCENT:
@@ -323,6 +325,10 @@ ATCState state_from_name(const std::string &name) {
       {"IFR_RADAR_CONTACT", ATCState::IFR_RADAR_CONTACT},
       {"IFR/ENROUTE_CRUISE", ATCState::IFR_ENROUTE_CRUISE},
       {"IFR_ENROUTE_CRUISE", ATCState::IFR_ENROUTE_CRUISE},
+      {"IFR/DESCENT", ATCState::IFR_DESCENT},
+      {"IFR_DESCENT", ATCState::IFR_DESCENT},
+      {"IFR/ARRIVAL", ATCState::IFR_ARRIVAL},
+      {"IFR_ARRIVAL", ATCState::IFR_ARRIVAL},
       {"IFR/APPROACH_CONTACT", ATCState::IFR_APPROACH_CONTACT},
       {"IFR_APPROACH_CONTACT", ATCState::IFR_APPROACH_CONTACT},
       {"IFR/APPROACH_DESCENT", ATCState::IFR_APPROACH_DESCENT},
@@ -587,6 +593,17 @@ const std::string &last_clearance_text() {
   return g_state.last_clearance_text_;
 }
 
+void set_last_tower_response(const std::string &text) {
+  if (text.empty())
+    return;
+  // NOTE: deliberately does NOT bump_gen(). atc_session calls this from
+  // speak_response_guarded AFTER the state-revert guard captured expected_gen;
+  // bumping here would make the guard always see a "stale" generation and never
+  // roll back on TTS failure. last_tower_response_text_ is a replay memory, not
+  // snapshot-tracked state, so it needs no gen bump.
+  g_state.last_tower_response_text_ = text;
+}
+
 std::string consume_readback_reminder(double now_secs) {
   // Gate 1: no pending readback → nothing to remind about.
   if (!g_state.readback_pending_)
@@ -622,6 +639,7 @@ std::string consume_readback_reminder(double now_secs) {
     const bool is_ifr_inflight =
         std::strcmp(cur, "IFR/ENROUTE_CRUISE") == 0    ||
         std::strcmp(cur, "IFR/DESCENT") == 0            ||
+        std::strcmp(cur, "IFR/ARRIVAL") == 0            ||
         std::strcmp(cur, "IFR/APPROACH_CONTACT") == 0   ||
         std::strcmp(cur, "IFR/APPROACH_DESCENT") == 0   ||
         std::strcmp(cur, "IFR/APPROACH_TOWER") == 0;
@@ -661,6 +679,12 @@ std::string consume_readback_reminder(double now_secs) {
 bool was_airborne() { return g_state.was_airborne_; }
 
 void set_was_airborne(bool v) { internal::set_was_airborne(v); }
+
+// Public wrapper for the training-jump entry points (engine::training_jump_*)
+// to lock the session callsign; the implementation lives in internal.
+void set_session_callsign(const std::string &cs) {
+  internal::set_session_callsign(cs);
+}
 
 void set_state(ATCState state) {
   internal::transition_to(state, "external_set_state");
@@ -946,7 +970,7 @@ ATCResponse process(const intent_parser::PilotMessage &msg_in,
         cs = msg.callsign;
       else
         cs = settings::pilot_callsign();
-      resp.text = cs + ", keine vorherige Anweisung zum Wiederholen.";
+      resp.text = cs + ", no previous clearance to repeat.";
     }
     resp.next_state = g_state.state_;
     resp.requires_readback = g_state.readback_pending_;
@@ -1078,6 +1102,21 @@ void check_auto_correction(flight_phase::FlightPhase phase, float dt,
         break;
       }
     }
+
+    // An "on_airborne" correction must never fire while the matched phase
+    // is still a GROUND phase. TAXI_CLEARED/GROUND_CONTACT list TAKEOFF_ROLL
+    // under on_airborne to catch a pilot departing without calling Tower,
+    // but TAKEOFF_ROLL is a ground phase (is_on_ground==true) and a fast
+    // taxi or runway backtrack trips it without the aircraft ever leaving
+    // the ground. That was wiping TAXI_CLEARED -> IDLE mid-taxi (LIMF
+    // 2026-07-09: holding-point call then rejected with "say again your
+    // request"). A real takeoff roll transitions to CLIMB (also listed)
+    // within seconds, so the legitimate revert still fires once the
+    // aircraft is genuinely airborne — we only defer it past the ground
+    // phase, never lose it.
+    if (matches && cond_name == "on_airborne" &&
+        flight_phase::is_on_ground(phase))
+      matches = false;
 
     if (matches) {
       // The legacy CROSS_COUNTRY suppression hack (skip Pattern

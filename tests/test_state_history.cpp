@@ -169,3 +169,24 @@ TEST_CASE("history: history_csv includes current state at end",
   REQUIRE(atc_state_machine::history_csv() ==
           std::string{"IDLE,Pattern/LANDING_CLEARED,IDLE"});
 }
+
+// Regression guard for the IFR/DESCENT -> IDLE arrival collapse
+// (LIMF -> LFLP 2026-07-10). state_name() maps every ATCState to a
+// string, but state_from_name()'s kMap had no "IFR/DESCENT" entry, so
+// the template lookup's next_state string round-tripped to the IDLE
+// fallback and every readback in IFR/DESCENT silently dropped the
+// flight to IDLE. This asserts EVERY enum value round-trips, so a new
+// state added to the enum without a matching kMap entry fails CI.
+TEST_CASE("state_from_name round-trips every ATCState", "[state_history]")
+{
+  // Enum is contiguous IDLE(0)..IFR_LANDING_CLEARED. Casting the index
+  // range walks all members; the qualified form emitted by state_name()
+  // must map back to the identical enum value.
+  for (int i = static_cast<int>(ATCState::IDLE);
+       i <= static_cast<int>(ATCState::IFR_LANDING_CLEARED); ++i) {
+    auto s = static_cast<ATCState>(i);
+    const std::string qualified = atc_state_machine::state_name(s);
+    INFO("state index " << i << " name=" << qualified);
+    REQUIRE(atc_state_machine::state_from_name(qualified) == s);
+  }
+}

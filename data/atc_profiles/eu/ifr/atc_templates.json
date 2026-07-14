@@ -270,6 +270,74 @@
       }
     },
 
+    "IFR/DESCENT": {
+      "_comment": "State after build_descent_clearance issues the TOD descent + STAR + approach. poll_descent/poll_approach drive step-downs; pilot-initiated intents (readback of the descent clearance, sector check-ins, freq changes) are handled here and MUST keep the aircraft in IFR/DESCENT. Without this block the descent-clearance readback fell through to the global _INVALID and dropped the machine to IDLE, collapsing the whole arrival (LIMF -> LFLP 2026-07-10).",
+      "INITIAL_CALL_APPROACH": {
+        "response": "{callsign}, radar contact.",
+        "next_state": "IFR/DESCENT",
+        "requires_readback": false
+      },
+      "INITIAL_CALL_CENTER": {
+        "response": "{callsign}, radar contact.",
+        "next_state": "IFR/DESCENT",
+        "requires_readback": false
+      },
+      "READBACK": {
+        "response": "",
+        "next_state": "IFR/DESCENT",
+        "requires_readback": false
+      },
+      "LEAVING_FREQUENCY": {
+        "response": "",
+        "next_state": "IFR/DESCENT",
+        "requires_readback": false
+      },
+      "REQUEST_FREQUENCY": {
+        "response": "",
+        "next_state": "IFR/DESCENT",
+        "requires_readback": false
+      },
+      "_INVALID": {
+        "response": "",
+        "next_state": "IFR/DESCENT",
+        "requires_readback": false
+      }
+    },
+
+    "IFR/ARRIVAL": {
+      "_comment": "Aircraft has crossed the first STAR fix (IAF for no-STAR) and is flying the arrival, still under ACC/arrival control. poll_arrival drives STAR step-downs and fires the real Approach handoff only when a controller resolves. Pilot-initiated intents (step-down readbacks, sector check-ins, freq changes) MUST keep the aircraft in IFR/ARRIVAL -- never fall through to a state that drops to IDLE mid-arrival.",
+      "INITIAL_CALL_APPROACH": {
+        "response": "{callsign}, radar contact.",
+        "next_state": "IFR/ARRIVAL",
+        "requires_readback": false
+      },
+      "INITIAL_CALL_CENTER": {
+        "response": "{callsign}, radar contact.",
+        "next_state": "IFR/ARRIVAL",
+        "requires_readback": false
+      },
+      "READBACK": {
+        "response": "",
+        "next_state": "IFR/ARRIVAL",
+        "requires_readback": false
+      },
+      "LEAVING_FREQUENCY": {
+        "response": "",
+        "next_state": "IFR/ARRIVAL",
+        "requires_readback": false
+      },
+      "REQUEST_FREQUENCY": {
+        "response": "",
+        "next_state": "IFR/ARRIVAL",
+        "requires_readback": false
+      },
+      "_INVALID": {
+        "response": "",
+        "next_state": "IFR/ARRIVAL",
+        "requires_readback": false
+      }
+    },
+
     "IFR/APPROACH_CONTACT_READBACK": {
       "_comment": "Pilot read back 'contact Approach on X.XXX' while still on Centre frequency. Stay in APPROACH_CONTACT until pilot switches and calls again.",
       "INITIAL_CALL_APPROACH": {

@@ -199,6 +199,7 @@ endif()
 add_library(xp_atc_engine OBJECT
     src/core/logging.cpp
     src/atc/engine.cpp
+    src/atc/sector_picker.cpp
     src/atc/intent_parser.cpp
     src/atc/intent_rules.cpp
     src/atc/atc_state_machine.cpp

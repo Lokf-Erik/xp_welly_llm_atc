@@ -231,13 +231,19 @@ static const std::unordered_map<std::string, std::string> kWordAliases = {
     {"rome", "romeo"},
     // Approach type — Voxtral mishearings:
     {"r9",    "rnav"}, // "R9 approach" → "RNAV approach"
+    {"r90",   "rnav"}, // "R90 approach" → "RNAV" (Voxtral: RNAV + spurious trailing 0)
+    {"r9z",   "rnav zulu"},   // "R9Z approach" → "RNAV Zulu" (RNAV+variant fused)
+    {"r9y",   "rnav yankee"}, // "R9Y approach" → "RNAV Yankee"
+    {"r9x",   "rnav x-ray"},  // "R9X approach" → "RNAV X-ray"
     {"armad", "rnav"}, // "armad approach" → "RNAV approach"
+    {"armor", "rnav"}, // "armor Zulu approach" → "RNAV" (Voxtral garble)
     {"arnal", "rnav"}, // "arnal approach" → "RNAV approach" (Voxtral: /v/→/l/)
     {"rmp",   "rnp"},  // "RMP approach" → "RNP approach"
     {"t7", "descent"}, // Voxtral: "T7" for "descent" in readbacks
     {"tpcat", "tipik"}, // "TPCAT" → "TIPIK" (Voxtral waypoint garble)
     // ATC facility name mishearings:
     {"race", "reims"},    // "Race radar/information" → "Reims" (Voxtral: /ʁɛ̃s/→/reɪs/)
+    {"prince", "france"}, // "Contact Prince on 118.030" → "France" (Voxtral: /fʁɑ̃s/→/pʁɪns/; LIMF -> LFLP 2026-07-11)
     // Common ATC word mishearings:
     {"content", "contact"}, // "content tower" → "contact tower"
 };
@@ -265,6 +271,19 @@ static const std::vector<std::pair<std::string, std::string>> kPhraseAliases = {
     {"arm of",            "rnav"},          // Voxtral: "arm of 07" → "RNAV 07"
     {"r nav",             "rnav"},          // Voxtral output when biased with "R NAV"
     {"r-nav",             "rnav"},          // Voxtral output when biased with "R-NAV"
+    {"on nav",            "rnav"},          // Voxtral: "expect on nav Zulu" → "RNAV"
+    // Voxtral mishears "descend/descent" as "the centre" before "flight level"
+    // in a descent readback ("the centre flight level 140" -> "descend flight
+    // level 140"). Phrase-scoped so the real word "centre" (Area Control
+    // Centre) is never touched. Both spellings covered.
+    {"the centre flight level", "descend flight level"},
+    {"the center flight level", "descend flight level"},
+    // Voxtral mishears "runway" as "one way" (e.g. "one way 04 vacated" ->
+    // "runway 04 vacated"). "one way" is not ATC phraseology so safe to alias.
+    {"one way", "runway"},
+    // Voxtral mishears "flight level" as "flat level" in descent readbacks
+    // ("flat level 65" -> "flight level 65"; LIMF -> LFLP 2026-07-11).
+    {"flat level", "flight level"},
     // Voxtral mishears "two" as "to" in frequencies — anchor with "decimal"
     // so "one to one decimal" = 121.xxx is fixed without corrupting callsigns
     // like "November One One One" which would match "one to one" without anchor.
@@ -726,6 +745,26 @@ PilotMessage parse(const std::string &transcript,
   auto m = intent_rules::match(text);
   msg.intent = m.intent;
   msg.confidence = m.confidence;
+
+  // 4b. "Say again" / repeat-clearance request (EUROCONTROL "SAY AGAIN").
+  //     Deterministic override: the rule table and the LM never offer
+  //     REQUEST_REPEAT (it is not in any state's valid_intents), so recognise
+  //     it here at high confidence. The state machine then replays the last
+  //     clearance verbatim (atc_state_machine::process REQUEST_REPEAT handler),
+  //     and REQUEST_REPEAT is an escape_intent so a pending readback is
+  //     preserved rather than clobbering this into READBACK (engine.cpp ~1924).
+  //     Pilots don't use these phrases inside a readback, so false positives
+  //     are not a concern. "repeat" alone is avoided (too broad) -- it is only
+  //     matched via "you repeat" / "please repeat".
+  {
+    auto has = [&](const char *s) { return text.find(s) != std::string::npos; };
+    if (has("say again") || has("confirm cleared") || has("you repeat") ||
+        has("please repeat")) {
+      msg.intent     = PilotIntent::REQUEST_REPEAT;
+      msg.confidence = 0.97f;
+      return msg; // skip adjustments -- nothing to downgrade on a repeat request
+    }
+  }
 
   // 5. Apply post-match adjustments (VRP upgrade, phase filter, airport-type
   //    mismatch demotions). Order is the JSON `adjustments` array order; each

@@ -204,3 +204,168 @@ TEST_CASE("freq guard: APPROACH frequency accepted in IFR_EN_ROUTE state",
     flight_phase::stop();
     openair_db::stop();
 }
+
+// ── Pending-handoff bypass (Fix B v2, v4.3.1) ─────────────────────────────
+
+// The plugin issues intermediate handoffs like "contact Milan on 118.675"
+// during SID climb (poll_sid_climb Phase 2.8) to controllers whose frequency
+// lives in atc.dat only (CTR role — no matching apt.dat entry). Result:
+// ctx.frequency_type = UNKNOWN even though the pilot is legitimately on the
+// frequency the plugin just told them to switch to. Without a bypass, the
+// wrong-freq guard silently drops the check-in transmission — reproduced
+// in-sim by pilot's three unanswered calls to Milan on 118.675 (2026-07-07).
+
+TEST_CASE("freq guard: pending-handoff freq bypasses UNKNOWN drop "
+          "in IFR_RADAR_CONTACT",
+          "[ifr_departure][freq_guard][pending_handoff]")
+{
+    engine::reset();
+    atc_state_machine::init();
+    intent_parser::init();
+    flight_phase::init();
+    openair_db::init("");
+
+    atc_state_machine::set_state(ATCState::IFR_RADAR_CONTACT);
+
+    // Simulate Phase 2.8 having fired: "contact Milan on 118.675".
+    engine::set_pending_handoff_freq(118.675f);
+
+    XPlaneContext ctx = make_ifr_ctx(14000.0f);
+    ctx.com1_freq_mhz  = 118.675f;   // pilot switched to the assigned freq
+    ctx.com2_freq_mhz  = 121.100f;   // (previous Approach)
+    ctx.active_com     = 1;
+    ctx.frequency_type = FrequencyType::UNKNOWN; // atc.dat-only CTR freq
+
+    engine::Input in{};
+    in.transcript     = "Milan Radar, November 750XP, climbing to flight level 210";
+    in.pilot_callsign = "N750XP";
+    in.quality        = 0.85f;
+    in.ctx            = &ctx;
+    in.now_secs       = 0.0;
+
+    engine::Output out;
+    engine::process_transcript(in, [&](engine::Output o) { out = std::move(o); });
+
+    // Bypass fired → some ATC response emitted (not the silent drop).
+    INFO("Response was: '" << out.response_text << "'");
+    REQUIRE_FALSE(out.response_text.empty());
+
+    atc_state_machine::stop();
+    intent_parser::stop();
+    flight_phase::stop();
+    openair_db::stop();
+}
+
+// In-sim regression: after Phase 2.8 fires "contact Milan on 118.675" at
+// 24:37, the pilot READS BACK the instruction at 24:55 while still on the
+// OLD frequency (121.100), then switches to 118.675 and checks in at 25:26.
+// The readback on the OLD freq must NOT clear s_pending_handoff_freq_mhz
+// or s_sector_checkin_pending, otherwise the subsequent check-in on the
+// NEW freq gets dropped by the wrong-freq guard. This reproduces the
+// LIMF→LFLP 2026-07-07 in-sim regression: 3 unanswered check-ins.
+
+TEST_CASE("pending handoff survives readback on OLD freq before switch",
+          "[ifr_departure][freq_guard][pending_handoff]")
+{
+    engine::reset();
+    atc_state_machine::init();
+    intent_parser::init();
+    flight_phase::init();
+    openair_db::init("");
+
+    atc_state_machine::set_state(ATCState::IFR_RADAR_CONTACT);
+    engine::set_pending_handoff_freq(118.675f);
+    REQUIRE(engine::pending_handoff_freq() == Catch::Approx(118.675f));
+
+    // Step 1: pilot reads back on OLD Torino APP freq 121.100.
+    XPlaneContext ctx_readback = make_ifr_ctx(12000.0f);
+    ctx_readback.com1_freq_mhz  = 121.100f;
+    ctx_readback.active_com     = 1;
+    ctx_readback.frequency_type = FrequencyType::APPROACH; // known APP freq
+
+    engine::Input in_rb{};
+    in_rb.transcript     = "Contact Milan on 118.675, November 750XP";
+    in_rb.pilot_callsign = "N750XP";
+    in_rb.quality        = 0.85f;
+    in_rb.ctx            = &ctx_readback;
+
+    engine::Output out_rb;
+    engine::process_transcript(in_rb, [&](engine::Output o) { out_rb = std::move(o); });
+
+    // ═══ Critical assertion: readback processing MUST NOT overwrite the
+    // ═══ pending handoff (previously Phase 2.8 set it to 118.675). If this
+    // ═══ fails, a template lambda somewhere in build_vars() is calling
+    // ═══ set_pending_handoff_freq with the airport's own APP freq — the
+    // ═══ LIMF→LFLP 2026-07-07 in-sim regression root cause.
+    INFO("Pending handoff after readback: " << engine::pending_handoff_freq());
+    REQUIRE(engine::pending_handoff_freq() == Catch::Approx(118.675f));
+
+    // Step 2: pilot switches to 118.675 and checks in.
+    XPlaneContext ctx_checkin = make_ifr_ctx(14000.0f);
+    ctx_checkin.com1_freq_mhz  = 118.675f;
+    ctx_checkin.active_com     = 1;
+    ctx_checkin.frequency_type = FrequencyType::UNKNOWN; // Milan Radar CTR
+
+    // After the CTX change, the pending handoff MUST still be 118.675
+    // (nothing between step 1 and step 2 touches it).
+    REQUIRE(engine::pending_handoff_freq() == Catch::Approx(118.675f));
+
+    engine::Input in_ck{};
+    in_ck.transcript     = "Milan Radar, November 750XP, climbing FL210";
+    in_ck.pilot_callsign = "N750XP";
+    in_ck.quality        = 0.85f;
+    in_ck.ctx            = &ctx_checkin;
+
+    engine::Output out_ck;
+    engine::process_transcript(in_ck, [&](engine::Output o) { out_ck = std::move(o); });
+
+    // The check-in on the NEW freq must NOT be silently dropped.
+    INFO("Check-in response: '" << out_ck.response_text << "'");
+    INFO("Pending handoff after check-in: " << engine::pending_handoff_freq());
+    REQUIRE_FALSE(out_ck.response_text.empty());
+
+    atc_state_machine::stop();
+    intent_parser::stop();
+    flight_phase::stop();
+    openair_db::stop();
+}
+
+TEST_CASE("freq guard: pending-handoff bypass does NOT apply to a mismatched "
+          "frequency (guard still drops truly-wrong freq)",
+          "[ifr_departure][freq_guard][pending_handoff]")
+{
+    engine::reset();
+    atc_state_machine::init();
+    intent_parser::init();
+    flight_phase::init();
+    openair_db::init("");
+
+    atc_state_machine::set_state(ATCState::IFR_RADAR_CONTACT);
+
+    // Plugin issued handoff to 118.675, but pilot tuned 121.100 instead.
+    engine::set_pending_handoff_freq(118.675f);
+
+    XPlaneContext ctx = make_ifr_ctx(14000.0f);
+    ctx.com1_freq_mhz  = 121.100f;   // WRONG — not the pending freq
+    ctx.active_com     = 1;
+    ctx.frequency_type = FrequencyType::UNKNOWN;
+
+    engine::Input in{};
+    in.transcript     = "Milan Radar, November 111, climbing to flight level 210";
+    in.pilot_callsign = "November 111";
+    in.quality        = 0.85f;
+    in.ctx            = &ctx;
+    in.now_secs       = 0.0;
+
+    engine::Output out;
+    engine::process_transcript(in, [&](engine::Output o) { out = std::move(o); });
+
+    // Bypass must NOT fire — the guard should still silently drop this call
+    // (pilot on the wrong frequency, not the one the plugin handed them off to).
+    REQUIRE(out.response_text.empty());
+
+    atc_state_machine::stop();
+    intent_parser::stop();
+    flight_phase::stop();
+    openair_db::stop();
+}

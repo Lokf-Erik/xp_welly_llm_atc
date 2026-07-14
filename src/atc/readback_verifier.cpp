@@ -74,9 +74,25 @@ static std::string compact_digit_spaces(const std::string &s) {
   return cur;
 }
 
+// Merge hyphen-separated digits: "7-0" -> "70". Voxtral renders spoken
+// "seven zero" as "Seven-0", and after normalize_phonetics that is "7-0"; the
+// hyphen would otherwise split the number in every extractor (FL70 read as
+// FL7, causing a "negative, flight level seven zero, readback" loop --
+// LFLP->LFMN 2026-07-12). Applied repeatedly so "1-1-0" -> "110".
+static std::string merge_digit_hyphens(const std::string &s) {
+  static const std::regex kRe(R"((\d)-(\d))");
+  std::string prev;
+  std::string cur = s;
+  do {
+    prev = cur;
+    cur  = std::regex_replace(cur, kRe, "$1$2");
+  } while (cur != prev);
+  return cur;
+}
+
 // Full normalisation pipeline for a readback transcript.
 static std::string normalise(const std::string &text) {
-  return compact_digit_spaces(normalize_phonetics(text));
+  return compact_digit_spaces(merge_digit_hyphens(normalize_phonetics(text)));
 }
 
 // ── Value extractors ──────────────────────────────────────────────────────
@@ -88,18 +104,39 @@ static int extract_runway(const std::string &norm) {
   std::smatch m;
   if (std::regex_search(norm, m, kRe))
     return std::stoi(m[1]);
+  // Runway implicit in the approach clearance: "RNAV Zulu approach 04",
+  // "ILS approach 04" -> runway 04. Pilots routinely drop the word "runway"
+  // when reading back the approach clearance ("expect RNAV Zulu approach 04"),
+  // where the number after "approach" (optionally "approach runway") IS the
+  // landing runway. Without this the readback verifier flags runway=missing
+  // and rejects an otherwise-correct readback (LIMF -> LFLP 2026-07-11).
+  static const std::regex kReAppr(
+      R"(\bapproach\s*(?:runway\s*)?(\d{1,2})[lLrRcC]?\b)",
+      std::regex_constants::icase);
+  if (std::regex_search(norm, m, kReAppr))
+    return std::stoi(m[1]);
   return -1;
 }
 
 // Returns flight level as int (90 for FL90 / "flight level 90" / "FL 090")
 // or 0 if absent.
 static int extract_fl(const std::string &norm) {
+  // The digit run may contain internal spaces that compact_digit_spaces did
+  // not merge. Voxtral mishears "two one zero" (210) as "to 10", which
+  // normalize_phonetics turns into "2 10" -- compact_digit_spaces only merges
+  // single-digit+single-digit ("(\b\d) (\d\b)"), so "2 10" survives and the
+  // old "(\d{1,3})" grabbed just the leading "2" -> FL2, a false mismatch
+  // (LIMF -> LFLP 2026-07-11: "flight level 210" verified as FL2). Match up to
+  // three digits separated by optional single spaces, then strip the spaces.
   static const std::regex kRe(
-      R"((?:fl\s*|flight\s+level\s+)(\d{1,3})\b)",
+      R"((?:fl\s*|flight\s+level\s+)(\d(?:\s?\d){0,2})\b)",
       std::regex_constants::icase);
   std::smatch m;
-  if (std::regex_search(norm, m, kRe))
-    return std::stoi(m[1]);  // stoi("090") == 90
+  if (std::regex_search(norm, m, kRe)) {
+    std::string digits = m[1];
+    digits.erase(std::remove(digits.begin(), digits.end(), ' '), digits.end());
+    return std::stoi(digits);  // stoi("090") == 90
+  }
   return 0;
 }
 
@@ -110,6 +147,24 @@ static int extract_alt_ft(const std::string &norm) {
   std::smatch m;
   if (std::regex_search(norm, m, kRe))
     return std::stoi(m[1]);
+  // Spoken word form: pilots read altitudes as "five thousand feet" (5000),
+  // "five thousand five hundred" (5500), "thirty-five hundred" (3500).
+  // Phonetic digits are already numerals here ("five"->"5"), so match
+  // "<n> thousand [<m> hundred]" and compute. "thousand"/"hundred" are
+  // altitude-specific (FL uses "flight level"), so "feet" may be dropped.
+  static const std::regex kReTh(
+      R"((\d{1,2})\s*thousand(?:\s*(\d{1,2})\s*hundred)?)",
+      std::regex_constants::icase);
+  if (std::regex_search(norm, m, kReTh)) {
+    int v = std::stoi(m[1]) * 1000;
+    if (m[2].matched)
+      v += std::stoi(m[2]) * 100;
+    return v;
+  }
+  static const std::regex kReH(R"((\d{1,3})\s*hundred)",
+                               std::regex_constants::icase);
+  if (std::regex_search(norm, m, kReH))
+    return std::stoi(m[1]) * 100;
   return 0;
 }
 
@@ -184,6 +239,19 @@ static std::string fl_to_speech(int fl) {
 }
 
 // ── Public API ────────────────────────────────────────────────────────────
+
+// Returns the assigned speed in knots (e.g. 250) or -1 if the text carries no
+// speed restriction. Anchored on "speed" so a wind read-out ("... 01 knots")
+// never matches; the digits may follow "speed" after filler ("speed, 250",
+// "reduce speed to 250 knots").
+static int extract_speed(const std::string &norm) {
+  static const std::regex kRe(R"(speed[a-z, ]*?(\d{2,3}))",
+                              std::regex_constants::icase);
+  std::smatch m;
+  if (std::regex_search(norm, m, kRe))
+    return std::stoi(m[1]);
+  return -1;
+}
 
 std::vector<Mismatch> check(const std::string &clearance_text,
                             const std::string &readback_text) {
@@ -272,6 +340,24 @@ std::vector<Mismatch> check(const std::string &clearance_text,
     }
   }
 
+  // ── Speed ──────────────────────────────────────────────────────────────
+  // Voxtral mishears the value ("250" -> "150"); speed was previously
+  // unverified so the wrong readback was silently accepted (LIMF -> LFLP).
+  int cl_spd = extract_speed(cl);
+  if (cl_spd > 0) {
+    int rb_spd = extract_speed(rb);
+    if (rb_spd <= 0 || rb_spd != cl_spd) {
+      Mismatch m;
+      m.field    = "speed";
+      m.expected = std::to_string(cl_spd);
+      m.stated   = rb_spd > 0 ? std::to_string(rb_spd) : "";
+      char buf[40];
+      std::snprintf(buf, sizeof(buf), "%d knots or less", cl_spd);
+      m.correction = std::string("negative, ") + buf + ", readback";
+      out.push_back(std::move(m));
+    }
+  }
+
   return out;
 }
 
@@ -308,6 +394,10 @@ std::vector<std::string> matched_fields(const std::string &clearance_text,
   std::string cl_sq = extract_squawk(cl);
   if (!cl_sq.empty() && extract_squawk(rb) == cl_sq)
     ok.push_back("squawk");
+
+  int cl_spd = extract_speed(cl);
+  if (cl_spd > 0 && extract_speed(rb) == cl_spd)
+    ok.push_back("speed");
 
   return ok;
 }
