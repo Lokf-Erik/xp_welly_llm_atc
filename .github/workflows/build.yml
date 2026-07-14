@@ -318,12 +318,38 @@ jobs:
           path: dist-win
           retention-days: 7
 
+  # ── Release source guard ────────────────────────────────────────────────
+  # A v* release tag MUST point at a commit that is contained in `main`. This
+  # blocks publishing a release from a PR branch or any unmerged commit — such
+  # a tag would ship code that never passed review / landed on main (possibly
+  # broken). The tag must be created on main (typically `make release`, which
+  # tags main's HEAD). Fails the release run otherwise; `package` needs this,
+  # so a failure here means nothing is ever published.
+  verify-tag-on-main:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0            # full history so ancestry can be computed
+      - name: Assert tagged commit is contained in main
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          if git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "OK: $GITHUB_SHA (tag ${GITHUB_REF_NAME}) is contained in main."
+          else
+            echo "::error::Tag ${GITHUB_REF_NAME} points at $GITHUB_SHA, which is NOT contained in main. Releases must be tagged on main. Refusing to publish."
+            exit 1
+          fi
+
   # ── Package + release (one combined bundle) ─────────────────────────────
   # Merges all three cloud-only platform slices with the shared data/ + docs/
   # into a single X-Plane plugin folder and publishes one release ZIP.
-  # Runs on tag pushes only.
+  # Runs on tag pushes only, and only once verify-tag-on-main confirms the tag
+  # sits on main.
   package:
-    needs: [build-macos, build-linux, build-windows]
+    needs: [verify-tag-on-main, build-macos, build-linux, build-windows]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     permissions:
