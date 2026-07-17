@@ -1,6 +1,28 @@
-# Welly's ATC — AI Voice ATC for X-Plane 12
+# Welly's IFR ATC — AI Voice ATC for X-Plane 12
 
 ![Welly's ATC panel with ATIS broadcast at LSZB Bern-Belp](images/atc-atis-example.jpg)
+
+> ### 🛫 This is the **IFR** plugin
+>
+> **Fly a complete IFR flight — gate to gate — talking to a real
+> controller.** Clearance delivery, pushback-to-holding-point taxi,
+> SID climb, en-route sector handoffs, STAR descent, approach, landing
+> and flight-plan closure. All by voice, all in ICAO phraseology, all
+> driven by your actual SimBrief flight plan and X-Plane's own CIFP
+> procedure data.
+>
+> **Looking for VFR?** VFR is a separate product and lives in its own
+> plugin: **[xp_wellys_vfr_atc](https://github.com/rwellinger/xp_wellys_vfr_atc)**
+> (pattern work, cross-country, UNICOM/CTAF, VRPs, traffic advisories).
+> This repository is the **IFR fork** and IFR is where all active
+> development happens. The VFR feature set below is inherited from the
+> upstream VFR plugin, still fully functional, but maintained there —
+> not here.
+>
+> Where the IFR feature set stands today, and what is next, is tracked
+> in [`ROADMAP-IFR_LINUX.md`](ROADMAP-IFR_LINUX.md).
+
+---
 
 > **Cross-platform X-Plane 12 ATC plugin — runs on macOS, Windows and
 > Linux. OpenAI Cloud, Mistral Cloud, or (Apple Silicon) fully offline
@@ -40,32 +62,77 @@
 > warm round-trip dominated by API latency. M1 local re-validation:
 > pending real-flight smoke test.
 
-> **Note — German VFR is moving to its own plugin.** This plugin is
-> English-only (EU / US ICAO-FAA phraseology). A dedicated **German
-> VFR** plugin (NfL / BZF DACH phraseology) is in the works and will
-> ship separately.
+> **Note — language.** This plugin is English-only (EU / US ICAO-FAA
+> phraseology). IFR is currently **EU profile only**. A dedicated
+> **German VFR** plugin (NfL / BZF DACH phraseology) is in the works and
+> will ship separately.
 
 ---
 
-AI-powered ATC voice communication plugin for X-Plane 12 VFR flights.
+## What this plugin does
 
-Talk to ATC using your microphone via push-to-talk. The plugin
-transcribes your speech (locally with whisper.cpp, via the OpenAI
-Whisper API, or via Mistral's Voxtral STT — your pick), interprets
-your intent through a rule-based ATC state machine — with a
-low-confidence fallback to a local Llama 3.2 3B classifier, OpenAI's
-`gpt-4o-mini`, or Mistral Small, again your pick — and plays back ATC
-responses synthesised locally with Piper or via OpenAI's / Mistral's
-TTS API.
+Talk to ATC with your own voice, over push-to-talk, for a full IFR
+flight in X-Plane 12 — and get a controller that actually *knows your
+flight*: your SimBrief route, your SID out of the CIFP, your assigned
+squawk, your cleared level, your STAR and approach, your runway.
+
+Press PTT, speak. The plugin transcribes your call (locally with
+whisper.cpp, via the OpenAI Whisper API, or via Mistral's Voxtral STT —
+your pick), resolves your intent through a rule-based ATC state machine
+with an LLM fallback for the calls it is unsure about, and speaks the
+controller's reply back at you through the radio bus.
+
+What makes it different from a scripted ATC:
+
+- **It follows your real flight plan.** SimBrief OFP is fetched in-sim.
+  The route's first fix picks the correct SID out of X-Plane's CIFP
+  data. Destination, cruise level and every navlog waypoint are live in
+  the engine — so the clearance you get is the clearance you filed for.
+- **It watches you fly, and calls you on it.** Off the filed track by
+  more than 5 NM? *"Confirm routing, you appear off track."* Not coming
+  down after a descent clearance? *"Confirm descending flight level
+  eight zero."* Level bust, RVSM-aware. Above 250 kt below FL100?
+  *"Reduce speed, 250 knots or less."*
+- **It talks first when a real controller would.** Descent into the
+  destination TMA, sector handoffs, direct-to shortcuts, SID step
+  climbs, radar contact — none of these need a pilot request. They fire
+  off airspace geometry and your position, unprompted.
+- **It checks your readbacks.** Flight level, altitude + QNH, frequency,
+  squawk and runway are verified against what was actually cleared.
+  Get one wrong and you get *"negative — [correct value] — readback."*
+- **It uses real controllers, real names, real frequencies.** Sector and
+  facility names come from `atc.dat` at your 3-D position; airspace
+  boundaries from an OpenAir database; runways, taxiways and
+  frequencies from `apt.dat`. Reims Prunay Information is called
+  "Reims Prunay Information", not "LFQA".
+- **You choose local or cloud.** Fully offline on Apple Silicon (no
+  subscription, no internet, ~1.16 s round trip), or OpenAI / Mistral
+  cloud with your own key on any platform. Switch at runtime.
+
+## A typical IFR flight, end to end
+
+| Phase | What you say | What ATC does |
+|---|---|---|
+| **Clearance** | "Delivery, N123AB, IFR to LFMN, information Bravo, request clearance" | ATIS letter challenged, then squawk + SID + initial altitude + destination |
+| **Startup / Taxi** | "Request start-up" · "Request taxi" | Start approval; taxi clearance to the holding point named from the apt.dat taxiway graph, with a squawk reminder |
+| **Holding point** | "Ready for departure" | Transponder verified (code + Mode C), line-up-and-wait → takeoff clearance with wind, then *"passing 4000 contact Approach 120.35"* |
+| **Departure** | Check-in on the new frequency | *"Radar contact."* SID step-climbs issued automatically, direct-to the last SID fix, then cruise level |
+| **En-route** | (mostly listening) | Handoff to Centre at the TMA ceiling, sector changes with real names, direct-to shortcuts, cross-track and altitude monitoring |
+| **Descent** | Read back the clearance | Unprompted on TMA entry: *"Descend flight level 80, contact Nice Approach on 120.350."* |
+| **Approach** | Check-in with Approach | *"Radar contact, identified, direct [IAF], RNAV approach runway 07, descend 4000, QNH 1013"* + STAR step-downs |
+| **Landing** | Check-in with Tower / AFIS | Landing clearance on the **CIFP-assigned** runway, with wind |
+| **After landing** | "Runway vacated" | Taxi via the taxiway you are physically on; IFR flight plan closed (towered) or telephone-closure instruction (AFIS) |
+
+
 
 ## Table of Contents
 
+- [IFR ATC — What's Included](#ifr-atc--whats-included)
 - [What's New 4.3.0](#whats-new-430)
 - [What's New 4.2.1](#whats-new-421)
 - [Features](#features)
 - [Hardware Requirements](#hardware-requirements)
 - [Software Requirements](#software-requirements)
-- [IFR ATC — What's Included](#ifr-atc--whats-included)
 - [IFR ATC — Data Requirements](#ifr-atc--data-requirements)
 - [Quick Start](#quick-start-pre-built-release)
 - [Backend Modes](#backend-modes)
@@ -82,6 +149,121 @@ TTS API.
 - [Development Workflow](#development-workflow)
 - [License](#license)
 - [Flight schools and commercial training](#flight-schools-and-commercial-training)
+
+## IFR ATC — What's Included
+
+> **EU profile only.** IFR is gated to the EU profile — in the US
+> profile the flow is never entered (IFR-only intents are stripped at the
+> state-machine entry). IFR is the active development focus of this fork;
+> the per-phase completion status and the open items live in
+> [`ROADMAP-IFR_LINUX.md`](ROADMAP-IFR_LINUX.md).
+
+### Clearance, startup and taxi
+
+- **Pre-departure clearance** — ATIS information letter challenged first,
+  then squawk (random from the configured range), SID, initial climb
+  altitude and destination, all read back and verified.
+- **Engine start approval** as a separate step when `start_mode` is
+  `cold_and_dark`.
+- **Taxi clearance** to a holding point whose name is resolved from the
+  apt.dat taxiway graph — not a hardcoded "via Alpha".
+- **Passive squawk reminder** on taxi ("verify squawk 4271, mode Charlie"),
+  then an **active check at the holding point**: the plugin reads the
+  transponder DataRefs and confirms both the code and Mode C before the
+  takeoff clearance.
+- **Tower-only airports** handled — no separate Delivery/Ground controller
+  needed.
+
+### Departure and SID climb
+
+- **Line-up-and-wait → takeoff clearance**, with the wind stated (and not
+  read back, per ICAO).
+- **Conditional handoff** in the takeoff clearance: *"passing 4000 ft,
+  contact Approach on 120.350"* — then the Tower → Departure handoff
+  fires and you read it back.
+- **Radar contact** on check-in, followed by **automatic SID step climbs**
+  from the CIFP procedure, a direct-to the last SID fix, and the cruise
+  level.
+- **Radar handoff to Centre** at the TMA upper boundary, taken from the
+  OpenAir airspace database.
+- **CIFP binding minimum altitude** respected (`ifr_sid_min_alt_ft` /
+  `ifr_sid_min_waypoint`).
+
+### En-route
+
+- **Centre check-in** with the real controller name and frequency, read
+  from `atc.dat` TRACON/CTR data at your 3-D aircraft position.
+- **Direct-to shortcuts** — *"N123AB, direct XAMUR, when able"* — fired
+  ~90–120 s after check-in for the first non-SID/STAR navlog fix more
+  than 20 NM ahead.
+- **Sector and FIR frequency changes** (e.g. the Marseille sectors,
+  Bordeaux FIR), with a mandatory acknowledgement — never a silent clear
+  — and no redundant "contact X on Y" if you are already tuned there.
+- **Cross-track deviation alert** — *"confirm routing, you appear off
+  track"* when you drift >5 NM off the filed navlog (3-min cooldown).
+- **Altitude deviation warning** — unit-consistent (FL against pressure
+  altitude, feet against QNH altitude), RVSM-aware: ±200 ft above FL290,
+  ±300 ft below, with a 60 s grace period after check-in.
+- **Speed restriction** below FL100 — continuously enforced at 250 kt with
+  5 kt hysteresis, so slowing down and speeding back up re-triggers it.
+- **Proactive descent** on destination TMA entry, no pilot request needed:
+  *"N123AB, descend flight level 80, contact Nice Approach on 120.350."*
+
+### Approach and landing
+
+- **Full approach clearance** on check-in: *"radar contact, identified,
+  direct [IAF], [type] approach runway [N], descend [alt], QNH [Q]."*
+- **STAR step-down clearances**, altitude-triggered per waypoint.
+- **Approach type and variant handling** — RNAV Z, ILS Y, RNP.
+- **Route tracker with IAF/FAF guards**, direct-to-IAF jumps, and a
+  distance-to-FAF fallback so vectored approaches that skip intermediate
+  fixes still trigger the Tower handoff.
+- **Verify-descending soft prompt** — *"confirm descending flight level
+  eight zero"* fires 45–100 s after a clearance if you are barely
+  descending, ahead of the harder deviation warning.
+- **Landing clearance on the CIFP-assigned runway**, not the wind-favoured
+  one — Tower issues RWY 07 for the R07 approach even on a calm day.
+- **Tower / AFIS handoff** at the FAF, with the spoken airport name
+  ("Reims Prunay Information", not "LFQA Information").
+- **Garble tolerance** — frequency is authoritative over the spoken
+  facility name, so a mis-transcribed controller name still produces the
+  right clearance.
+
+### After landing
+
+- **Runway vacated** → contact Ground (towered) or taxi via the nearest
+  edge (tower-only / AFIS), with the taxiway you are **physically on**
+  picked by point-to-segment distance against every apt.dat taxiway edge.
+- **IFR flight plan closure**: towered → *"IFR flight plan closed at 1432,
+  good day"*; AFIS → *"contact [airport] by telephone to close IFR flight
+  plan."*
+
+### Readback verification
+
+Flight level, altitude, feet + QNH, frequency, squawk and runway are all
+checked against what was actually cleared. A mismatch gets you
+*"negative, [expected], readback."* Waypoint and procedure **identifiers**
+are deliberately not verified yet — current STT garbles multi-letter idents
+often enough (ROMAM → "Rome, Am") that strict comparison would false-reject
+correct readbacks.
+
+### Data integration
+
+| Source | What it drives |
+|---|---|
+| **SimBrief OFP** | Destination, SID selection, cruise level, registration, aircraft type, full navlog (ident, airway, lat/lon, altitude, SID/STAR flag). Async fetch from an IFR tab in the ImGui panel with a scrollable waypoint list. |
+| **CIFP** (`Custom Data/CIFP/`) | SID matched to your route's first fix, real initial climb altitude, STAR and approach procedures, FAF, procedure waypoints, runway binding with calm-wind and reciprocal fallback. |
+| **OpenAir airspace** (`airspace.txt`) | Class A–G polygons with floor/ceiling; 3-D enclosing lookup drives every TMA / CTR / FIR boundary event. |
+| **`atc.dat`** | Real controller names and frequencies at your 3-D position. |
+| **`apt.dat`** | Runway geometry, frequencies, transition altitude, taxiway node/edge graph. |
+
+### STT tuned for IFR
+
+Voxtral `context_bias` is fed the airport, your navlog fixes, the STAR,
+your callsign and a mishearing list; the initial prompt carries IFR
+vocabulary; runway bias is emitted dynamically for the assigned approach
+runway ("R-NAV 07"), and your callsign's last two letters are appended as
+a bigram ("Romeo Charlie") so tail numbers survive transcription.
 
 ## What's New 4.3.0
 
@@ -270,6 +452,14 @@ and uses matching phraseology.
 
 ## Features
 
+The IFR feature set has its own section above —
+[IFR ATC — What's Included](#ifr-atc--whats-included). What follows is
+the platform underneath it, plus the VFR feature set inherited from the
+upstream [VFR plugin](https://github.com/rwellinger/xp_wellys_vfr_atc)
+(functional here, but maintained there).
+
+### Platform
+
 - **Push-to-Talk** — bound via X-Plane command binding (keyboard or joystick)
 - **Triple-backend inference** — pick **OpenAI Cloud** or **Mistral
   Cloud** (all platforms, BYO API key), or **Local** (Apple Silicon
@@ -300,9 +490,17 @@ and uses matching phraseology.
   British neutral reads closest to ICAO broadcast cadence). Separate
   Keychain entry so the OpenAI and Mistral keys coexist; switching
   modes never requires re-pasting.
-- **ATC State Machine** — VFR phraseology for towered and non-towered airports
+- **ATC State Machine** — IFR and VFR phraseology for towered, tower-only,
+  AFIS and non-towered airports
 - **Flight Phase Detection** — context-aware guards prevent unrealistic ATC
   interactions based on aircraft state (parked, taxi, airborne, etc.)
+### Shared with / inherited from the VFR plugin
+
+These come from the upstream VFR plugin and are maintained there. ATIS
+and the phraseology hints serve the IFR flow too (the clearance request
+challenges the ATIS letter); traffic, pattern sequencing and the
+cross-country flow are VFR-only.
+
 - **Live Traffic Awareness (v2.1) + Landing Sequencing (v2.2)** —
   provider-agnostic `sim/cockpit2/tcas/targets/...` reader feeding a
   2 Hz `TrafficContext` snapshot. EU-phraseology en-route advisories
@@ -325,6 +523,9 @@ and uses matching phraseology.
 - **Cross-Country Support** — full VFR departure, en-route frequency change,
   and inbound flow between airports. Approach controller proactively
   hands off to Tower with the destination frequency.
+
+### Reliability and UI
+
 - **Aircraft registration display** — pilot callsign linked to the
   cockpit's actual tail number read from X-Plane
 - **"Disregard" recovery** — flow-aware reset (PATTERN_ENTRY when
@@ -413,45 +614,6 @@ accordingly.
 | X-Plane | X-Plane 12 (12.0 or later) |
 | OpenAI / Mistral account | Required for the cloud modes — an API key with billing enabled for the respective provider. Not needed on Apple Silicon in **Local** mode (offline), which ships in the release; required for every other platform / slice. |
 | For building from source (macOS) | CMake 3.26+, Homebrew LLVM (`brew install llvm`), Xcode Command Line Tools. Windows builds via MSVC in CI; Linux via GCC/Clang — see the per-platform READMEs. |
-
-## IFR ATC — What's Included
-
-> **EU profile only.** IFR is gated to the EU profile — in the US
-> profile the flow is never entered (IFR-only intents are stripped at the
-> state-machine entry). The feature is under active development; some
-> departure-clearance flows are still being refined.
-
-### Departure / Ground
-
-- Pre-departure clearance: ATIS challenge, squawk assignment, SID, initial altitude
-- Holding point name resolved from the apt.dat taxiway graph
-- Line-up-and-wait → takeoff flow
-- Squawk verify at the holding point (transponder code + Mode C)
-- Tower → Departure frequency handoff
-
-### CIFP integration
-
-- SID selected by matching the SimBrief FPL first fix to the CIFP SID last waypoint
-- Real SID initial altitude from CIFP (fallback: apt.dat 1302 `transition_alt`)
-- Runway binding, calm-wind selection, reciprocal fallback
-
-### SimBrief OFP
-
-- Async fetch + full navlog parsing (ident, airway, lat/lon, altitude, SID/STAR flag)
-- IFR tab in the ImGui panel: scrollable waypoint list, SID/STAR fixes dimmed
-
-### OpenAir airspace DB
-
-- Reads `airspace.txt`, Class A–G polygons with floor/ceiling
-- 3D `find_enclosing(lat, lon, alt_ft)` drives TMA/CTR/FIR boundary detection
-
-### En-route
-
-- Centre check-in after TMA exit (real name + frequency from atc.dat CTR)
-- Direct-to shortcut to the first en-route fix > 20 NM (~90–120 s after check-in)
-- Sector/FIR frequency-change detection (Marseille sectors, Bordeaux FIR)
-- FL altitude-deviation warning (±200 ft RVSM ≥ FL290 / ±300 ft below)
-- TMA entry descent + Approach handoff
 
 ## IFR ATC — Data Requirements
 
@@ -944,16 +1106,28 @@ make distclean     # also remove sdk/, vendor/
 
 ## FAQ
 
-**Does this support IFR or flight planning?**
-Yes — IFR departure flow is implemented (EU profile).  The plugin handles
-pre-departure clearance (Delivery or Tower), startup approval, taxi to holding
-point, line-up-and-wait, takeoff clearance, CTR departure handoff, and radar
-contact with Departure/Approach.  SID assignment uses CIFP data matched to the
-filed flight plan's first fix.  See **IFR ATC — What's Included** for the full
-feature breakdown and **IFR ATC — Data Requirements** for what must be
-installed.  En-route (Centre check-in, sector/FIR handoffs, TMA-entry descent)
-is also implemented in the EU profile and under active refinement; full
-approach and holding phases remain on the roadmap.
+**What's the difference between this plugin and xp_wellys_vfr_atc?**
+This one is the **IFR** plugin and the fork where IFR development happens:
+clearance delivery, SID/STAR, en-route sector handoffs, approach, landing,
+flight-plan closure — driven by SimBrief + CIFP + OpenAir data.
+[xp_wellys_vfr_atc](https://github.com/rwellinger/xp_wellys_vfr_atc) is the
+**VFR** plugin: pattern work, cross-country, UNICOM/CTAF, VRPs, traffic
+advisories and landing sequencing. The VFR feature set is still present and
+working here (it is the shared base), but it is maintained upstream — new VFR
+work lands there, new IFR work lands here.
+
+**Does this support IFR and flight planning?**
+Yes — that is the point of this fork, in the EU profile. Clearance
+(Delivery or Tower), startup, taxi to the holding point, line-up-and-wait,
+takeoff, CTR departure handoff, radar contact, SID step climbs, Centre
+check-in, sector/FIR handoffs, TMA-entry descent, STAR step-downs, approach
+clearance, landing on the CIFP-assigned runway and IFR flight-plan closure
+are all implemented. SID assignment matches CIFP data to your filed flight
+plan's first fix. See **IFR ATC — What's Included** for the feature
+breakdown, **IFR ATC — Data Requirements** for what must be installed, and
+[`ROADMAP-IFR_LINUX.md`](ROADMAP-IFR_LINUX.md) for per-phase status. Still
+open: missed approach / go-around, holding patterns, en-route traffic
+separation, and SID/STAR speed-constraint enforcement.
 
 **Will there be a virtual co-pilot or checklist reader?**
 Not in scope today. The plugin is a single-pilot Pilot ↔ ATC voice interface;
@@ -988,15 +1162,16 @@ manually on your transponder.
 **How does it compare to BeyondATC or SayIntentions?**
 Strengths: 100 % offline option on Apple Silicon (no subscription, no
 cloud, no constant internet required — at the user's discretion), ~1.16 s
-warm pipeline latency in local mode, ICAO-correct EU phraseology with
-realistic Tower reactions to pilot errors. Two cloud options — **OpenAI**
-and **Mistral** — are available as paid opt-ins (BYO key) for users who
-prefer cloud LLMs or run an Intel Mac. Mistral typically costs less per
-token.
-Limitations today: IFR is EU-profile only and still maturing, no
-wake-turbulence spacing (sequencing in v2.2 is distance-only — Phase 5 on
-roadmap), no transponder data link, no co-pilot. It is not yet an all-in-one
-replacement for those products.
+warm pipeline latency in local mode, ICAO-correct EU phraseology, and an
+IFR controller that reads your SimBrief plan and X-Plane's own CIFP data,
+verifies your readbacks, and calls you on track, altitude and speed
+deviations unprompted. Two cloud options — **OpenAI** and **Mistral** —
+are paid opt-ins (BYO key) for users who prefer cloud LLMs or run an Intel
+Mac. Mistral typically costs less per token.
+Limitations today: IFR is EU-profile only and still maturing (no missed
+approach, no holding patterns, no en-route traffic separation yet), no
+wake-turbulence spacing on the VFR side, no transponder data link, no
+co-pilot. It is not yet an all-in-one replacement for those products.
 
 **Is there an introduction video?**
 Not yet.
