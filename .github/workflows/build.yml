@@ -51,7 +51,7 @@ jobs:
             cmake pkg-config unzip \
             libcurl4-openssl-dev libssl-dev libpulse-dev
 
-      - name: Setup dependencies (cloud-only — no submodules)
+      - name: Setup dependencies (cloud-only — no bundle)
         run: make setup-cloud
 
       - name: Set up ccache
@@ -389,7 +389,7 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v5
-        # data/ and docs/ come straight from the repo — no submodules needed.
+        # data/ and docs/ come straight from the repo — no bundle needed.
 
       - name: Download macOS slice
         uses: actions/download-artifact@v4

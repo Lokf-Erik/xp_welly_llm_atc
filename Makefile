@@ -49,13 +49,6 @@ ESPEAK_DATA_DIR   := $(PREBUILT_LIBS_DIR)/share/espeak-ng-data
 # SkunkCrafts Updater staging dir (under build/, already gitignored).
 SKUNK_DIR := build/skunkcrafts
 
-# One sentinel for the three submodule trees (whisper.cpp, llama.cpp,
-# Piper). They are all pulled in by a single
-# `git submodule update --init --recursive` invocation, so tracking
-# only the first one is sufficient — if it's missing, the whole
-# submodule init runs and lands all three.
-SUBMODULES_SENTINEL := spikes/spike_whisper/third_party/whisper.cpp/CMakeLists.txt
-
 CATCH2_VERSION := 3.7.1
 
 # Sources fed to clang-tidy. Mirrors the per-platform source selection in
@@ -136,21 +129,6 @@ $(PREBUILT_SENTINEL):
 	cd $(PREBUILT_LIBS_DIR)/lib && \
 	    grep -E '^[0-9a-f]{64}  ' ../manifest.txt | $(SHA256SUM) -c -
 	@echo "xp_wellys_libs bundle v$(PREBUILT_LIBS_VERSION) installed and verified."
-
-$(SUBMODULES_SENTINEL):
-	@if [ ! -d .git ]; then \
-	    echo "ERROR: not a git checkout - submodules cannot be initialised."; \
-	    echo ""; \
-	    echo "If you downloaded a release ZIP, the third-party sources"; \
-	    echo "(whisper.cpp, llama.cpp, Piper) are not bundled. Re-clone with:"; \
-	    echo ""; \
-	    echo "    git clone --recurse-submodules <repo-url>"; \
-	    echo ""; \
-	    exit 1; \
-	fi
-	@echo "Initialising git submodules (whisper.cpp, llama.cpp, Piper)..."
-	@git submodule update --init --recursive
-	@echo "Submodules ready."
 
 $(SDK_SENTINEL):
 	@echo "Downloading X-Plane SDK..."
@@ -274,7 +252,7 @@ endif
 # ── REPL (headless CLI) ───────────────────────────────────────────────────────
 repl: $(SDK_SENTINEL) $(IMGUI_SENTINEL) $(JSON_SENTINEL) $(CATCH2_SENTINEL)
 	@echo "=== Building atc_repl ==="
-	# SDK-free dev tool — LOCAL_INFERENCE=OFF keeps it submodule-independent.
+	# SDK-free dev tool — LOCAL_INFERENCE=OFF keeps it bundle-independent.
 	cmake -B build -DCMAKE_BUILD_TYPE=Release \
 	    -DXPWELLYS_USE_LOCAL_INFERENCE=OFF -Wno-dev
 	cmake --build build --target atc_repl --parallel
@@ -288,7 +266,7 @@ run-repl: repl
 # ── IFR REPL (headless IFR approach test CLI) ─────────────────────────────────
 ifr-repl: $(SDK_SENTINEL) $(IMGUI_SENTINEL) $(JSON_SENTINEL) $(CATCH2_SENTINEL)
 	@echo "=== Building atc_ifr_repl ==="
-	# SDK-free dev tool — LOCAL_INFERENCE=OFF keeps it submodule-independent.
+	# SDK-free dev tool — LOCAL_INFERENCE=OFF keeps it bundle-independent.
 	cmake -B build -DCMAKE_BUILD_TYPE=Release \
 	    -DXPWELLYS_USE_LOCAL_INFERENCE=OFF -Wno-dev
 	cmake --build build --target atc_ifr_repl --parallel
@@ -306,7 +284,7 @@ test-unit: $(SDK_SENTINEL) $(IMGUI_SENTINEL) $(JSON_SENTINEL) $(CATCH2_SENTINEL)
 	@echo "=== Building xp_wellys_atc unit tests ==="
 	# Tests exercise the SDK-free engine only; the local backends are never
 	# linked, so LOCAL_INFERENCE=OFF is functionally identical here and keeps
-	# the configure independent of the whisper/llama/Piper submodules.
+	# the configure independent of the prebuilt whisper/llama/Piper bundle.
 	cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=ON \
 	    -DXPWELLYS_USE_LOCAL_INFERENCE=OFF -Wno-dev
 	cmake --build build --target xp_wellys_atc_tests --parallel
