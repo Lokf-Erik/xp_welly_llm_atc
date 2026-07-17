@@ -13,17 +13,22 @@ on:
   workflow_dispatch:
 
 # PR / dispatch builds are cloud-only on every platform
-# (XPWELLYS_USE_LOCAL_INFERENCE=OFF): the whisper.cpp / llama.cpp / Piper trees
-# are neither fetched nor compiled, which cuts a ~50-min build to a few minutes.
+# (XPWELLYS_USE_LOCAL_INFERENCE=OFF): whisper.cpp / llama.cpp / Piper are
+# neither downloaded nor linked, so nothing here needs the prebuilt bundle.
 #
 # TAG (release) builds are cloud-only for Windows, Linux and macOS-Intel
 # (x86_64), but the macOS Apple Silicon (arm64) slice is built WITH local
-# inference so the download release keeps offline STT/LM/TTS on the only
-# platform that supports it. The universal macOS .xpl carries an arm64 slice
-# (whisper + llama + Piper + cloud) and an x86_64 slice (cloud-only); Intel
-# Macs load the x86_64 slice and never touch the arm64-only dylibs.
-# Local inference remains a build-from-source option (`make build`) on other
-# platforms.
+# inference so the download release keeps offline STT/LM/TTS there. The
+# universal macOS .xpl carries an arm64 slice (whisper + llama + Piper +
+# cloud) and an x86_64 slice (cloud-only); Intel Macs load the x86_64 slice
+# and never touch the arm64-only dylibs.
+#
+# Nothing in this workflow compiles whisper/llama/Piper any more: they are
+# consumed prebuilt from the rwellinger/xp_wellys_libs bundle pinned by
+# PREBUILT_LIBS_VERSION, which is what took the tag build from ~50 min to a
+# few minutes. Local inference on Linux is a `make build` option for dev
+# machines — the release stays cloud-only there — so build-linux carries a
+# non-releasing link check to keep that path honest (see the job).
 
 jobs:
   # ── Test gate (runs once) ───────────────────────────────────────────────
@@ -60,48 +65,46 @@ jobs:
         run: make test
 
   # ── macOS slice (universal) ─────────────────────────────────────────────
-  # PR / dispatch: fast arm64 cloud-only compile check (no submodules). Tag:
+  # PR / dispatch: fast arm64 cloud-only compile check (no bundle). Tag:
   # universal arm64+x86_64 .xpl staged for the package job — the arm64 slice
-  # is built WITH local inference (whisper + llama + Piper), the x86_64 slice
-  # cloud-only. On tag, the local dylibs + espeak-ng-data are staged too.
+  # is built WITH local inference (whisper + llama + Piper, consumed prebuilt
+  # from the xp_wellys_libs bundle), the x86_64 slice cloud-only. On tag, the
+  # local dylibs + espeak-ng-data are staged too.
   build-macos:
     # Also gate on verify-tag-on-main so a release tag that is NOT on main
-    # never even starts the expensive universal arm64 local-inference build
-    # (~50 min). The guard only runs on tags (skipped on PR/dispatch), so the
-    # if-condition lets a 'skipped' guard through (PR fast-check still runs)
-    # but blocks a 'failure' (bad tag). !cancelled() is required so the job is
-    # still evaluated when the guard was skipped rather than auto-skipped.
+    # never starts the universal arm64 local-inference build. The guard only
+    # runs on tags (skipped on PR/dispatch), so the if-condition lets a
+    # 'skipped' guard through (PR fast-check still runs) but blocks a
+    # 'failure' (bad tag). !cancelled() is required so the job is still
+    # evaluated when the guard was skipped rather than auto-skipped.
     needs: [test, verify-tag-on-main]
     if: >-
       !cancelled() &&
       needs.test.result == 'success' &&
       needs.verify-tag-on-main.result != 'failure'
     runs-on: macos-latest
+    # Was unbounded (-> 360 min default) back when the tag build compiled
+    # whisper/llama/ggml/Piper from source for ~50 min. Only the plugin's own
+    # ~40 TUs compile now, so a run that exceeds this is hung, not slow.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v5
 
-      # Local inference needs the whisper.cpp / llama.cpp / Piper submodules.
-      # Only tag builds compile them, so only tag builds fetch them — PR /
-      # dispatch stay submodule-free and fast.
-      - name: Fetch submodules (tag builds only)
-        if: startsWith(github.ref, 'refs/tags/v')
-        run: |
-          git config --global url."https://github.com/".insteadOf "git@github.com:"
-          git submodule update --init --recursive
-
-      - name: Setup dependencies (cloud-only — no submodules)
+      - name: Setup dependencies (cloud-only — no bundle)
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         run: make setup-cloud
 
-      - name: Setup dependencies (with local-inference submodules)
+      - name: Setup dependencies (downloads the prebuilt xp_wellys_libs bundle)
         if: startsWith(github.ref, 'refs/tags/v')
         run: make setup
 
       - name: Set up ccache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
-          key: ${{ runner.os }}-${{ github.job }}-${{ startsWith(github.ref, 'refs/tags/v') && 'release' || 'debug' }}
-          max-size: 1500M
+          # Caches only the plugin's own ~40 TUs now (the heavy libs are
+          # prebuilt), so a small static key is plenty.
+          key: ${{ runner.os }}-${{ github.job }}
+          max-size: 500M
           variant: ccache
 
       - name: Build (fast compile check, cloud-only)
@@ -121,8 +124,9 @@ jobs:
         # XPWELLYS_USE_LOCAL_INFERENCE=ON (whisper + llama + Piper + cloud) and
         # x86_64 with it OFF (cloud-only) — then lipo's them into one universal
         # build/xp_wellys_atc.xpl and stages libpiper.dylib +
-        # libonnxruntime.*.dylib + espeak_ng-install/ next to it. -DRELEASE=ON
-        # bakes VERSION.txt into both slices.
+        # libonnxruntime.*.dylib next to it. -DRELEASE=ON bakes VERSION.txt
+        # into both slices. Only the plugin's own TUs compile — whisper/llama/
+        # Piper come prebuilt from the bundle `make setup` downloaded.
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
           make build RELEASE_FLAG="-DRELEASE=ON"
@@ -157,8 +161,9 @@ jobs:
 
           # espeak-ng-data is plain phoneme/dictionary data — identical on every
           # platform, so the single combined bundle carries one copy (from here).
+          # It ships inside the prebuilt bundle now, not in a build tree.
           rsync -a --delete \
-            build/espeak_ng-install/share/espeak-ng-data/ \
+            "vendor/prebuilt/xp_wellys_libs-arm64-macos-$(cat PREBUILT_LIBS_VERSION)/share/espeak-ng-data/" \
             "$STAGE/Resources/espeak-ng-data/"
 
       - name: Upload macOS slice
@@ -189,7 +194,7 @@ jobs:
             libcurl4-openssl-dev libssl-dev libpulse-dev \
             libgl1-mesa-dev
 
-      - name: Setup dependencies (cloud-only — no submodules)
+      - name: Setup dependencies (cloud-only — no bundle)
         run: make setup-cloud
 
       - name: Set up ccache
@@ -205,6 +210,24 @@ jobs:
             -DXPWELLYS_USE_LOCAL_INFERENCE=OFF \
             -DBUILD_TESTS=OFF -Wno-dev
           cmake --build build --parallel --target xp_wellys_atc
+          ccache --show-stats
+
+      - name: Local-inference link check (not released)
+        # Linux releases cloud-only, but `make build` on a Linux dev box uses
+        # the linux-x64 full bundle -- and no other job in this repo ever
+        # consumes it, so without this the whole Linux local path would break
+        # silently on the next pin bump and nobody would learn until a user
+        # tried it. Cheap (~3-4 min: only the plugin's own TUs compile) purely
+        # BECAUSE the libs are prebuilt. Uploads nothing, gates nothing.
+        run: |
+          make setup
+          cmake -B build-local -DCMAKE_BUILD_TYPE=Release \
+            -DXPWELLYS_USE_LOCAL_INFERENCE=ON \
+            -DBUILD_TESTS=OFF -Wno-dev
+          cmake --build build-local --parallel --target xp_wellys_atc
+          # libpiper.so must resolve onnxruntime from its own directory, with
+          # no LD_LIBRARY_PATH -- i.e. the bundle's $ORIGIN RUNPATH survived.
+          ldd build-local/libpiper.so | grep onnxruntime
           ccache --show-stats
 
       - name: Stage Linux slice

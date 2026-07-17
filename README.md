@@ -822,9 +822,11 @@ For **Windows** and **Linux** — both cloud-only — follow
 (Windows builds via MSVC in CI; Linux via `make build`).
 
 ```sh
-git clone --recurse-submodules <repo-url>
+git clone <repo-url>          # no --recurse-submodules: there are none
 cd xp_welly_llm_atc
-make setup     # X-Plane SDK, Dear ImGui, nlohmann/json, Catch2, spike submodules
+make setup     # X-Plane SDK, Dear ImGui, nlohmann/json, Catch2 + the prebuilt
+               # xp_wellys_libs bundle (whisper/llama/Piper — downloaded, not
+               # compiled; version pinned by PREBUILT_LIBS_VERSION)
 make build     # Universal Release build → build/xp_wellys_atc.xpl (arm64
                # with all three backends + x86_64 cloud-only, lipo'd into
                # one .xpl). This is the local-inference build — the same
@@ -1076,8 +1078,8 @@ PTT remains active in parallel.
 ```sh
 make all           # clean + format + build + lint + test (full local CI)
 make build         # universal: arm64 (local + both clouds) + x86_64 (clouds only), lipo'd
-make setup         # deps incl. local-inference submodules
-make setup-cloud   # deps WITHOUT the whisper/llama/Piper submodules (cloud-only; used by CI)
+make setup         # deps incl. the prebuilt local-inference bundle
+make setup-cloud   # deps WITHOUT the whisper/llama/Piper bundle (cloud-only; used by CI)
 make release-build # same as `make build` but passes -DRELEASE=ON (embeds VERSION.txt)
 make test          # unit tests + scenario tests
 make install       # code-sign + install to X-Plane
@@ -1249,13 +1251,17 @@ linked libraries, their licenses, and how they are vendored.
 ### CI Pipeline
 
 **PR / dispatch** builds are **cloud-only**
-(`XPWELLYS_USE_LOCAL_INFERENCE=OFF`) — the whisper/llama/Piper submodules
-are neither fetched nor compiled, so a run finishes in minutes instead of
-~50. **Tag (release)** builds are cloud-only too — *except* the macOS
-Apple Silicon (arm64) slice, which is built with local inference so the
-release keeps offline mode on the only platform that supports it. That
-arm64 compile is why the macOS release job is the slow one; Windows,
-Linux and macOS-Intel stay cloud-only and fast.
+(`XPWELLYS_USE_LOCAL_INFERENCE=OFF`) — whisper/llama/Piper are neither
+downloaded nor linked. **Tag (release)** builds are cloud-only too —
+*except* the macOS Apple Silicon (arm64) slice, which is built with local
+inference so the release keeps offline mode there. Windows, Linux and
+macOS-Intel stay cloud-only.
+
+No CI job compiles whisper/llama/Piper any more: they come prebuilt from
+[`rwellinger/xp_wellys_libs`](https://github.com/rwellinger/xp_wellys_libs),
+pinned by `PREBUILT_LIBS_VERSION`. That is what took the macOS release job
+from ~50 min to a few minutes — only the plugin's own ~40 translation units
+compile now.
 
 The GitHub Actions pipeline runs in three situations:
 

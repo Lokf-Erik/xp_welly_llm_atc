@@ -49,8 +49,15 @@ into the bundled `libpiper.dylib` used by the `arm64` slice).
 
 ## Build System
 
+> **Note:** this file still describes the project as macOS-only. That is
+> outdated — `CMakeLists.txt` and `.github/workflows/build.yml` have carried a
+> Linux slice (PulseAudio, file-based keychain, OpenSSL SHA256) and a Windows
+> slice (WASAPI, Credential Manager) for a while. The prebuilt-libs change
+> below only corrected the sections it made wrong; the rest of the macOS-only
+> framing is known debt, tracked separately.
+
 ```bash
-make setup     # X-Plane SDK, Dear ImGui, nlohmann/json, Catch2, spike submodules
+make setup     # X-Plane SDK, Dear ImGui, nlohmann/json, Catch2, prebuilt xp_wellys_libs bundle
 make build     # Universal Release build → build/xp_wellys_atc.xpl (arm64+x86_64 lipo'd)
 make install   # Code-sign + install to X-Plane plugins directory
 make all       # clean + format + build + lint + test (full local CI)
@@ -75,11 +82,11 @@ templates) attached to the X-Plane process for runtime leak hunting in
 the live plugin.
 
 - **CMake 3.26+**, C++17, **macOS 13.3+** (onnxruntime 1.22.0 requires this)
-- **CMake option `XPWELLYS_USE_LOCAL_INFERENCE`** (default `ON`) — gates
-  whether the three local backends (`whisper_stt`, `llama_lm`, `piper_tts`)
-  and their submodule dependencies (whisper.cpp, llama.cpp, Piper) are
-  compiled and linked. Turn `OFF` for the x86_64 slice; the resulting
-  binary has zero local-inference code.
+- **CMake option `XPWELLYS_USE_LOCAL_INFERENCE`** (default `ON`, forced `OFF`
+  on Windows) — gates whether the three local backends (`whisper_stt`,
+  `llama_lm`, `piper_tts`) are compiled and whether the prebuilt
+  xp_wellys_libs bundle is required at all. Turn `OFF` for the x86_64 slice;
+  the resulting binary has zero local-inference code and needs no bundle.
 - Toolchain: Homebrew LLVM (`/opt/homebrew/opt/llvm`), `ccache` auto-detected
 - Output: `build/xp_wellys_atc.xpl`; on the arm64 slice also staged
   `libpiper.dylib` + `libonnxruntime.{1.22.0,}.dylib` next to the `.xpl`,
@@ -93,9 +100,10 @@ the live plugin.
   downloader (arm64 / Local mode) AND by every cloud HTTPS call (both
   OpenAI and Mistral clients). The three local backends MUST NOT use
   libcurl; see Backend Adapter Rule.
-- Inference libs (arm64 only): `whisper`, `llama`, `common` (static) +
-  `piper` (shared dylib, links `libonnxruntime.1.22.0.dylib`). The
-  x86_64 slice links only libcurl + the system frameworks above.
+- Inference libs (local-inference slices only): consumed prebuilt via the
+  single imported target `xp_wellys_libs::inference` (static whisper/llama/ggml
+  in link order + `libpiper` + onnxruntime + the platform's frameworks/system
+  libs). The x86_64 slice links only libcurl + the system frameworks above.
 
 ## Vendor Dependencies
 
@@ -106,13 +114,26 @@ Populated by `make setup`, never committed:
 | `sdk/` | X-Plane SDK headers (XPLM/, XPWidgets/) |
 | `vendor/imgui/` | Dear ImGui v1.91.x |
 | `vendor/json.hpp` | nlohmann/json v3.11.x |
-| `spikes/spike_whisper/third_party/whisper.cpp/` | whisper.cpp submodule |
-| `spikes/spike_llama/third_party/llama.cpp/` | llama.cpp submodule (provides `ggml`) |
-| `spikes/spike_piper/third_party/piper1-gpl/` | Piper submodule (espeak-ng + onnxruntime) |
+| `vendor/prebuilt/xp_wellys_libs-<platform>-<version>/` | Prebuilt whisper/llama/ggml/Piper/onnxruntime + espeak-ng-data |
 
-The CMake build pulls llama.cpp **first** so its pinned `ggml` target wins;
-whisper.cpp then short-circuits on the existing target. This is documented
-inline in `CMakeLists.txt`.
+whisper.cpp, llama.cpp and Piper are **not** built here and are not
+submodules. They are compiled once in
+[`rwellinger/xp_wellys_libs`](https://github.com/rwellinger/xp_wellys_libs)
+and downloaded as a versioned, SHA256-verified tarball, pinned by
+`PREBUILT_LIBS_VERSION` at the repo root — that file is the single source of
+truth, read by both the `Makefile` and `CMakeLists.txt`. The bundle also owns
+the link order and the ggml/Metal options that used to live in our
+`CMakeLists.txt` (including the "llama.cpp first so its pinned `ggml` wins"
+dance — that now happens in the libs repo). Bumping the pin is a bundle
+release there plus a one-line change here.
+
+Note `PREBUILT_LIBS_VERSION` is the *bundle* version, unrelated to this
+plugin's `VERSION.txt`. Because it is part of the extracted directory name, a
+bump can never silently reuse a stale tree.
+
+GPL note: the bundle ships espeak-ng binaries, so `THIRD_PARTY.md`'s source
+offer points at the libs repo. It must stay public, and its release assets
+must outlive every plugin version that pins them.
 
 ---
 
@@ -199,7 +220,7 @@ xp_welly_llm_atc/
 │       └── us/{atc_templates,flight_rules,ui_strings}.json
 ├── tools/atc_repl/                     # Headless dev tool (engine OBJECT lib only)
 ├── tests/                              # Catch2 unit + scenario tests
-├── spikes/                             # Spike submodules + experiments
+├── spikes/                             # Experiments (third_party sources dropped — see xp_wellys_libs)
 ├── sdk/                                # make setup, not committed
 └── vendor/                             # make setup, not committed
 ```

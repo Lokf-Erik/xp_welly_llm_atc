@@ -83,28 +83,35 @@ Linux (Ubuntu 24.04 / Zorin OS 18.1) support for [xp_wellys_atc](README.md).
 
 ```bash
 sudo apt install \
-    build-essential cmake ninja-build ccache git \
+    build-essential cmake ninja-build ccache git curl \
     libpulse-dev \
     libssl-dev \
     libcurl4-openssl-dev \
     libgl-dev \
-    pkg-config \
-    patchelf
+    pkg-config
 ```
 
-> `patchelf` is required — it rewrites `libpiper.so`'s RPATH to `$ORIGIN`
-> as a post-build step so the plugin loads on machines other than the build host.
+> `patchelf` is no longer needed: `libpiper.so` now arrives from the prebuilt
+> bundle with its RPATH already set to `$ORIGIN`. It used to be patched here
+> as a post-build step, but only with a warning if patchelf was absent — which
+> silently produced a plugin that loaded nowhere but the build host.
 
 ### Build
 
 ```bash
-git clone --recurse-submodules <repo-url>
+git clone <repo-url>          # no --recurse-submodules: there are none
 cd xp_welly_llm_atc
 
-make setup    # downloads SDK, ImGui, nlohmann/json, Catch2
-make build    # CMake Release -> build-pr/xp_wellys_atc.xpl
+make setup    # SDK, ImGui, nlohmann/json, Catch2 + the prebuilt
+              # xp_wellys_libs bundle (whisper/llama/Piper, ~45 MB,
+              # SHA256-verified; version pinned by PREBUILT_LIBS_VERSION)
+make build    # CMake Release -> build/xp_wellys_atc.xpl (WITH local inference)
 make install  # copies to ~/X-Plane 12/Resources/plugins/xp_wellys_atc/
 ```
+
+The Linux **release** on GitHub is cloud-only; local inference on Linux is a
+`make build` option for dev machines. CI keeps that path compiling via a
+non-releasing link check in `build-linux`.
 
 Override the X-Plane path if needed:
 ```bash
