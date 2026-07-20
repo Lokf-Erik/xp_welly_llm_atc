@@ -30,3 +30,9 @@ Resources/models/
 # stray/aux dirs (not part of the plugin)
 build-pr/
 /memory/
+
+# Leftover whisper.cpp / llama.cpp / piper1-gpl checkouts from before those
+# submodules were dropped (they are prebuilt in xp_wellys_libs now). Harmless
+# to keep locally, but untracked they would be ~240 MB for `git add -A` to
+# swallow into the repo. Safe to delete.
+spikes/*/third_party/

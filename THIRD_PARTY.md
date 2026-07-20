@@ -9,8 +9,8 @@ all dependencies are GPLv3-compatible.
 
 | Component | Version | License | How it ships |
 |---|---|---|---|
-| [whisper.cpp](https://github.com/ggerganov/whisper.cpp) | v1.7.6 | MIT | Static library inside the `.xpl` |
-| [llama.cpp](https://github.com/ggerganov/llama.cpp) | gguf-v0.17.1-1250 | MIT | Static library inside the `.xpl` |
+| [whisper.cpp](https://github.com/ggerganov/whisper.cpp) | v1.8.5-95 (`f049fff9`) | MIT | Static library inside the `.xpl` (prebuilt, see below) |
+| [llama.cpp](https://github.com/ggerganov/llama.cpp) | gguf-v0.19.0-687 (`f449e055`) | MIT | Static library inside the `.xpl` (prebuilt, see below) |
 | [Piper](https://github.com/OHF-Voice/piper1-gpl) | v1.4.2 | MIT (libpiper); GPL-3.0 (espeak-ng) | `libpiper.dylib` next to the `.xpl` |
 | [onnxruntime](https://github.com/microsoft/onnxruntime) | 1.22.0 | MIT | `libonnxruntime.1.22.0.dylib` next to the `.xpl` (prebuilt vendor binary) |
 | [espeak-ng](https://github.com/espeak-ng/espeak-ng) | bundled with Piper | GPL-3.0-or-later | Statically linked inside `libpiper.dylib`; data dir bundled |
@@ -24,11 +24,12 @@ all dependencies are GPLv3-compatible.
 
 ### whisper.cpp — MIT
 
-Inference engine for the bundled Whisper STT model. Compiled with
+Inference engine for the bundled Whisper STT model. Compiled with the
 Metal backend enabled (`GGML_METAL=ON`, `GGML_METAL_EMBED_LIBRARY=ON`)
-and Apple Accelerate framework. Source is vendored as a git submodule
-under `spikes/spike_whisper/third_party/whisper.cpp` and linked
-statically into the plugin module.
+and the Apple Accelerate framework on macOS-arm64, plain CPU on Linux.
+Built in `rwellinger/xp_wellys_libs` and linked statically into the
+plugin module from that repo's prebuilt bundle (see *Source
+availability*).
 
 The Whisper *model files* are downloaded by the user at first launch
 from [`huggingface.co/ggerganov/whisper.cpp`](https://huggingface.co/ggerganov/whisper.cpp);
@@ -44,9 +45,9 @@ languages* toggle exposes both.
 ### llama.cpp — MIT
 
 Inference engine for the bundled Llama LLM model. Same Metal/Accelerate
-setup as whisper.cpp; vendored under
-`spikes/spike_llama/third_party/llama.cpp` and linked statically. The
-plugin uses the public `llama` and `common` targets.
+setup as whisper.cpp; built in `rwellinger/xp_wellys_libs` and linked
+statically from its prebuilt bundle. The plugin uses the public `llama`
+target (`llama_lm.cpp` includes only `llama.h`).
 
 The bundled *model* (`Llama-3.2-3B-Instruct-Q4_K_M.gguf`) is licensed
 under the **Llama 3.2 Community License Agreement** by Meta, accepted
@@ -65,10 +66,11 @@ statically linked into `libpiper.dylib`. Because espeak-ng is GPLv3
 and is linked into a binary we ship, the combined Piper artifact is
 effectively GPLv3 — same license as this plugin, so no conflict.
 
-Source is vendored under
-`spikes/spike_piper/third_party/piper1-gpl/libpiper`. The build
-configuration uses libpiper's own CMake which fetches espeak-ng via
-ExternalProject and downloads the prebuilt onnxruntime arm64 release.
+Piper is built in `rwellinger/xp_wellys_libs`, whose CMake drives
+libpiper's own build: espeak-ng is fetched via ExternalProject and
+statically linked, and the prebuilt onnxruntime release for the target
+platform is downloaded. Both `libpiper` and onnxruntime ship inside the
+bundle this repo consumes.
 
 The bundled *voice models* come from the
 [rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices)
@@ -93,12 +95,15 @@ espeak-ng system-wide.
 
 ### onnxruntime — MIT
 
-Microsoft's neural-network inference runtime. Used by Piper. We ship
-the **prebuilt arm64 macOS dylib** released by Microsoft on GitHub —
-building onnxruntime from source is a multi-day undertaking and not
-realistic for this project. The dylib (`libonnxruntime.1.22.0.dylib`,
-~33 MB) is downloaded once during build by libpiper's CMake, then
-copied alongside the `.xpl` so it resolves through `@loader_path`
+Microsoft's neural-network inference runtime. Used by Piper. We ship the
+**prebuilt binary** released by Microsoft on GitHub — building
+onnxruntime from source is a multi-day undertaking and not realistic for
+this project. It is fetched by libpiper's CMake while the
+`xp_wellys_libs` bundle is built and travels inside that bundle:
+`libonnxruntime.1.22.0.dylib` (~33 MB) on macOS-arm64,
+`libonnxruntime.so.1.22.0` plus its `.so.1`/`.so` symlinks and
+`libonnxruntime_providers_shared.so` on Linux. Either way it is staged
+alongside the `.xpl` and resolves through the `@loader_path` / `$ORIGIN`
 rpath at runtime.
 
 ### Dear ImGui — MIT
@@ -147,8 +152,34 @@ This plugin is open source. The full source is at
 binary releases include or link to the source repository in the
 release notes.
 
-For the bundled third-party static libraries (whisper.cpp, llama.cpp,
-Piper, espeak-ng), the source is publicly available at the project
-URLs listed in the table above; the plugin links them at fixed
-git revisions which are recorded in `.gitmodules` and visible in the
-spike directories.
+For the bundled third-party libraries (whisper.cpp, llama.cpp, Piper,
+espeak-ng), the source is publicly available at the project URLs listed
+in the table above. This repository no longer vendors them as submodules:
+they are compiled once in the sibling repository
+[`rwellinger/xp_wellys_libs`](https://github.com/rwellinger/xp_wellys_libs)
+and consumed here as a prebuilt binary bundle, pinned by the
+`PREBUILT_LIBS_VERSION` file at the repository root.
+
+That repository is public and holds both the exact upstream revisions (as
+submodule pins) and the complete scripts used to build the binaries — the
+corresponding source and installation information GPLv3 requires for the
+espeak-ng code we distribute in binary form. The revisions a given plugin
+build actually links are additionally recorded in the `[submodule pins]`
+section of the consumed bundle's `manifest.txt`. As of
+`PREBUILT_LIBS_VERSION` 0.3.0 they are:
+
+| Component | Revision |
+|---|---|
+| whisper.cpp | `f049fff95a089aa9969deb009cdd4892b3e74916` (v1.8.5-95) |
+| llama.cpp | `f449e0553708b895adbd94a301431cef691f632d` (gguf-v0.19.0-687) |
+| piper1-gpl | `d6975e21a440c0d8b6e5fb7c41027409af13d44d` (v1.4.2) |
+| onnxruntime | 1.22.0 (prebuilt upstream binary, fetched by Piper's CMake) |
+
+Two obligations follow from this and must be honoured for as long as any
+release is in circulation:
+
+- **`rwellinger/xp_wellys_libs` must remain public.** It is this document's
+  source offer; taking it private would leave the espeak-ng binaries we
+  ship without one.
+- **A bundle release asset must not be deleted** while any plugin version
+  still pins it, for the same reason.

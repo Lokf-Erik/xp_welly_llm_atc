@@ -14,17 +14,24 @@ option(BUILD_TESTS "Build Catch2 unit tests" ON)
 
 # ── Local-inference toggle ───────────────────────────────────────────────────
 # When ON, the plugin module is compiled with whisper.cpp + llama.cpp +
-# Piper (Metal-accelerated, Apple Silicon only). When OFF, those
-# backends are skipped entirely and only the OpenAI cloud clients are
-# built — letting the same source tree produce an x86_64 (Intel)
-# slice that runs against api.openai.com.
+# Piper, consumed prebuilt from the xp_wellys_libs bundle (Metal on Apple
+# Silicon, plain CPU on Linux). When OFF, those backends are skipped entirely
+# and only the cloud clients are built — letting the same source tree produce
+# an x86_64 (Intel) slice that runs against api.openai.com.
 #
 # A universal binary is assembled by building twice (once per
 # architecture) and lipo-ing the two .xpl outputs together — see
 # `make build`.
 option(XPWELLYS_USE_LOCAL_INFERENCE
-    "Compile local whisper.cpp/llama.cpp/Piper backends (Apple Silicon only)"
+    "Compile local whisper.cpp/llama.cpp/Piper backends (prebuilt bundle)"
     ON)
+if(WIN32)
+    # The Windows slice is cloud-only by design, and xp_wellys_libs publishes
+    # no win-x64 FULL bundle — so leaving the default ON would make a plain
+    # `cmake -B build` on Windows fail with "bundle missing" instead of just
+    # building what Windows actually ships.
+    set(XPWELLYS_USE_LOCAL_INFERENCE OFF CACHE BOOL "" FORCE)
+endif()
 
 # ── Sanitizer build (ASan + UBSan) ───────────────────────────────────────────
 # When ON, instruments the SDK-free engine OBJECT lib + atc_repl + Catch2
@@ -112,78 +119,42 @@ find_package(CURL REQUIRED)
 
 # ── Local inference backends (whisper.cpp, llama.cpp, Piper) ─────────────────
 #
-# We reuse the submodules that already live under spikes/spike_*/third_party/
-# (initialised by `make setup` per the spike Makefiles) instead of pulling
-# fresh copies under vendor/ — same git revisions, no extra disk + bandwidth,
-# and the spikes stay buildable from the same source tree.
-#
-# Order matters: llama.cpp is added FIRST because both whisper.cpp and
-# llama.cpp vendor `ggml` and short-circuit when the target already exists.
-# Adding llama first locks in llama's pinned ggml; whisper then reuses that
-# target instead of pulling in a second (potentially incompatible) copy.
-# This dance is lifted from spike_e2e/CMakeLists.txt where it was validated.
-
-set(SPIKES_DIR "${CMAKE_SOURCE_DIR}/spikes")
-
+# Consumed PREBUILT from the xp_wellys_libs bundle: those third-party trees are
+# compiled once in that repo and downloaded here by `make setup`. No submodules,
+# no add_subdirectory, no ggml flag block, no ~50 min cold compile. The bundle
+# also owns the link order and the ggml/Metal options that used to live here.
 if(XPWELLYS_USE_LOCAL_INFERENCE)
-    message(STATUS "Building with local inference (whisper + llama + Piper)")
-
-    # --- shared ggml options ---
-    set(BUILD_SHARED_LIBS           OFF CACHE BOOL "" FORCE)
-    set(GGML_BLAS                   OFF CACHE BOOL "" FORCE)
+    # Derive the bundle path from the SAME single source of truth the Makefile
+    # uses, so a bare `cmake -B build` works without it and can never silently
+    # pick up a stale differently-versioned tree.
+    file(READ "${CMAKE_SOURCE_DIR}/PREBUILT_LIBS_VERSION" _xwl_ver)
+    string(STRIP "${_xwl_ver}" _xwl_ver)
     if(APPLE)
-        set(GGML_METAL                  ON  CACHE BOOL "" FORCE)
-        set(GGML_METAL_EMBED_LIBRARY    ON  CACHE BOOL "" FORCE)
-        set(GGML_ACCELERATE             ON  CACHE BOOL "" FORCE)
+        set(_xwl_plat "arm64-macos")
     else()
-        # Linux: CPU-only, no Metal / Accelerate
-        set(GGML_METAL                  OFF CACHE BOOL "" FORCE)
-        set(GGML_METAL_EMBED_LIBRARY    OFF CACHE BOOL "" FORCE)
-        set(GGML_ACCELERATE             OFF CACHE BOOL "" FORCE)
-        set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+        set(_xwl_plat "linux-x64")
     endif()
-
-    # --- llama.cpp (provides `ggml`, `llama`, `common`) ---
-    set(LLAMA_BUILD_COMMON       ON  CACHE BOOL "" FORCE)
-    set(LLAMA_BUILD_TOOLS        OFF CACHE BOOL "" FORCE)
-    set(LLAMA_BUILD_EXAMPLES     OFF CACHE BOOL "" FORCE)
-    set(LLAMA_BUILD_SERVER       OFF CACHE BOOL "" FORCE)
-    set(LLAMA_BUILD_TESTS        OFF CACHE BOOL "" FORCE)
-    set(LLAMA_CURL               OFF CACHE BOOL "" FORCE)
-    add_subdirectory(${SPIKES_DIR}/spike_llama/third_party/llama.cpp
-                     ${CMAKE_BINARY_DIR}/llama.cpp EXCLUDE_FROM_ALL)
-
-    # --- whisper.cpp (provides `whisper`; reuses llama's ggml target) ---
-    set(WHISPER_BUILD_EXAMPLES      OFF CACHE BOOL "" FORCE)
-    set(WHISPER_BUILD_TESTS         OFF CACHE BOOL "" FORCE)
-    set(WHISPER_BUILD_SERVER        OFF CACHE BOOL "" FORCE)
-    add_subdirectory(${SPIKES_DIR}/spike_whisper/third_party/whisper.cpp
-                     ${CMAKE_BINARY_DIR}/whisper.cpp EXCLUDE_FROM_ALL)
-
-    # --- piper (provides `piper`; pulls in espeak-ng (static) + onnxruntime
-    # (prebuilt dylib)) ---
-    add_subdirectory(${SPIKES_DIR}/spike_piper/third_party/piper1-gpl/libpiper
-                     ${CMAKE_BINARY_DIR}/libpiper EXCLUDE_FROM_ALL)
-
-    # espeak-ng-data is installed by libpiper's ExternalProject under the build
-    # dir.
-    set(XP_WELLYS_ATC_ESPEAKNG_DATA_DIR
-        "${CMAKE_BINARY_DIR}/espeak_ng-install/share/espeak-ng-data"
-        CACHE PATH "Path to espeak-ng-data used at runtime (dev fallback)")
-
-    # Path to onnxruntime prebuilt — staged next to the .xpl so it
-    # resolves through @loader_path / $ORIGIN with no gymnastics.
-    if(APPLE)
-        set(ONNXRUNTIME_LIB_DIR
-            "${SPIKES_DIR}/spike_piper/third_party/piper1-gpl/libpiper/lib/onnxruntime-osx-arm64-1.22.0/lib"
-            CACHE PATH "Directory holding libonnxruntime.<ver>.dylib")
-    else()
-        set(ONNXRUNTIME_LIB_DIR
-            "${SPIKES_DIR}/spike_piper/third_party/piper1-gpl/libpiper/lib/onnxruntime-linux-x64-1.22.0/lib"
-            CACHE PATH "Directory holding libonnxruntime.so")
+    set(XP_WELLYS_LIBS_ROOT
+        "${CMAKE_SOURCE_DIR}/vendor/prebuilt/xp_wellys_libs-${_xwl_plat}-${_xwl_ver}"
+        CACHE PATH "Extracted xp_wellys_libs bundle root")
+    if(NOT EXISTS "${XP_WELLYS_LIBS_ROOT}/xp_wellys_libs.cmake")
+        message(FATAL_ERROR
+            "Prebuilt xp_wellys_libs bundle v${_xwl_ver} missing at "
+            "${XP_WELLYS_LIBS_ROOT}. Run `make setup` to download it.")
     endif()
+    message(STATUS
+        "Local inference: prebuilt xp_wellys_libs v${_xwl_ver} (${_xwl_plat})")
+
+    # Defines xp_wellys_libs::inference — the static whisper/llama/ggml archives
+    # in link order, plus libpiper + onnxruntime and the platform's system libs.
+    include("${XP_WELLYS_LIBS_ROOT}/xp_wellys_libs.cmake")
+
+    # Staged next to the .xpl so they resolve through @loader_path / $ORIGIN
+    # with no gymnastics.
+    set(ONNXRUNTIME_LIB_DIR "${XP_WELLYS_LIBS_ROOT}/lib")
+    set(PIPER_LIB_DIR       "${XP_WELLYS_LIBS_ROOT}/lib")
 else()
-    message(STATUS "Building OpenAI-only (no whisper/llama/piper)")
+    message(STATUS "Building cloud-only (no whisper/llama/piper)")
 endif()
 
 # ── Engine OBJECT library (X-Plane SDK-frei) ─────────────────────────────────
@@ -377,14 +348,9 @@ target_include_directories(xp_wellys_atc PRIVATE
 )
 
 if(XPWELLYS_USE_LOCAL_INFERENCE)
-    target_include_directories(xp_wellys_atc PRIVATE
-        # Local inference backends — headers from the spike submodules.
-        ${SPIKES_DIR}/spike_whisper/third_party/whisper.cpp/include
-        ${SPIKES_DIR}/spike_llama/third_party/llama.cpp/include
-        ${SPIKES_DIR}/spike_llama/third_party/llama.cpp/ggml/include
-        ${SPIKES_DIR}/spike_llama/third_party/llama.cpp/common
-        ${SPIKES_DIR}/spike_piper/third_party/piper1-gpl/libpiper/include
-    )
+    # No target_include_directories here: whisper.h / llama.h / ggml / piper.h
+    # come with xp_wellys_libs::inference's INTERFACE include dirs.
+    #
     # Surface the flag to C++ code so loader.cpp can #ifdef the
     # local-only includes + backend instantiation calls.
     target_compile_definitions(xp_wellys_atc PRIVATE
@@ -437,19 +403,14 @@ if(APPLE)
     )
 
     if(XPWELLYS_USE_LOCAL_INFERENCE)
-        target_link_libraries(xp_wellys_atc PRIVATE
-            # Local inference: whisper.cpp + llama.cpp build static
-            # and link in directly. Piper is shared (libpiper.dylib)
-            # and is resolved at runtime via @loader_path — see rpath
-            # setup below.
-            whisper
-            common
-            llama
-            piper
-        )
+        # Static whisper/llama/ggml in link order + libpiper.dylib +
+        # onnxruntime + the Metal/Accelerate frameworks, all declared by the
+        # prebuilt bundle. Piper is shared and resolved at runtime via
+        # @loader_path — see the rpath setup below.
+        target_link_libraries(xp_wellys_atc PRIVATE xp_wellys_libs::inference)
 
-        # rpath: dev builds find dylibs in build/ and build/lib/<ort>;
-        # the installed bundle finds them via @loader_path (Makefile
+        # rpath: dev builds find the dylibs in build/ and in the bundle;
+        # the installed plugin finds them via @loader_path (Makefile
         # install target copies libpiper.dylib +
         # libonnxruntime.<ver>.dylib next to the .xpl).
         set_target_properties(xp_wellys_atc PROPERTIES
@@ -463,8 +424,8 @@ if(APPLE)
         # can copy verbatim.
         add_custom_command(TARGET xp_wellys_atc POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "$<TARGET_FILE:piper>"
-                "${CMAKE_BINARY_DIR}/$<TARGET_FILE_NAME:piper>"
+                "${PIPER_LIB_DIR}/libpiper.dylib"
+                "${CMAKE_BINARY_DIR}/libpiper.dylib"
             COMMAND ${CMAKE_COMMAND} -E echo
                 "Staged libpiper next to xp_wellys_atc.xpl"
             COMMENT "Staging libpiper.dylib alongside xp_wellys_atc.xpl"
@@ -526,46 +487,36 @@ if(UNIX AND NOT APPLE)
             BUILD_RPATH "\$ORIGIN:${CMAKE_BINARY_DIR}:${ONNXRUNTIME_LIB_DIR}"
             INSTALL_RPATH "\$ORIGIN"
         )
-        target_link_libraries(xp_wellys_atc PRIVATE
-            whisper common llama piper
-        )
+        # Static whisper/llama/ggml (wrapped in --start-group) + libpiper.so +
+        # onnxruntime + Threads/dl/m, all declared by the prebuilt bundle.
+        target_link_libraries(xp_wellys_atc PRIVATE xp_wellys_libs::inference)
+
+        # No patchelf step: the bundle ships libpiper.so with RUNPATH already
+        # rewritten to $ORIGIN. It used to be patched here, but only as a soft
+        # warning — a machine without patchelf silently produced a .so that
+        # loads nowhere else. Owning it in the bundle makes that unfixable
+        # by omission.
         add_custom_command(TARGET xp_wellys_atc POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "$<TARGET_FILE:piper>"
-                "${CMAKE_BINARY_DIR}/$<TARGET_FILE_NAME:piper>"
+                "${PIPER_LIB_DIR}/libpiper.so"
+                "${CMAKE_BINARY_DIR}/libpiper.so"
             COMMENT "Staging libpiper.so alongside xp_wellys_atc.xpl"
         )
-        # piper1-gpl's own CMake sets libpiper.so's RUNPATH to the
-        # onnxruntime prebuilt dir — an absolute build-machine path that
-        # doesn't exist on the end-user's machine.  Strip it to $ORIGIN so
-        # libpiper.so resolves libonnxruntime.so.1 from its own directory.
-        find_program(PATCHELF_EXECUTABLE patchelf)
-        if(PATCHELF_EXECUTABLE)
-            add_custom_command(TARGET xp_wellys_atc POST_BUILD
-                COMMAND ${PATCHELF_EXECUTABLE} --set-rpath "$ORIGIN"
-                        "${CMAKE_BINARY_DIR}/$<TARGET_FILE_NAME:piper>"
-                COMMENT "Patching libpiper.so RPATH to $ORIGIN"
-                VERBATIM
-            )
-        else()
-            message(WARNING
-                "patchelf not found — libpiper.so will keep the build-time "
-                "RPATH and won't load on other machines. "
-                "Fix: sudo apt install patchelf")
-        endif()
         add_custom_command(TARGET xp_wellys_atc POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${ONNXRUNTIME_LIB_DIR}/libonnxruntime.so.1.22.0"
                 "${CMAKE_BINARY_DIR}/libonnxruntime.so.1.22.0"
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${ONNXRUNTIME_LIB_DIR}/libonnxruntime.so"
-                "${CMAKE_BINARY_DIR}/libonnxruntime.so"
             # libpiper.so links against the SONAME libonnxruntime.so.1 —
             # the .so symlink alone is not enough; the .so.1 symlink must
-            # also be present next to the .xpl.
+            # also be present next to the .xpl. Both are recreated rather
+            # than copied from the bundle: copy_if_different dereferences a
+            # symlink, which would stage two more 15 MB copies.
             COMMAND ${CMAKE_COMMAND} -E create_symlink
                 libonnxruntime.so.1.22.0
                 "${CMAKE_BINARY_DIR}/libonnxruntime.so.1"
+            COMMAND ${CMAKE_COMMAND} -E create_symlink
+                libonnxruntime.so.1.22.0
+                "${CMAKE_BINARY_DIR}/libonnxruntime.so"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${ONNXRUNTIME_LIB_DIR}/libonnxruntime_providers_shared.so"
                 "${CMAKE_BINARY_DIR}/libonnxruntime_providers_shared.so"

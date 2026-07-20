@@ -19,15 +19,35 @@ IMGUI_SENTINEL  := vendor/imgui/imgui.h
 JSON_SENTINEL   := vendor/json.hpp
 CATCH2_SENTINEL := vendor/catch2/catch_amalgamated.hpp
 
+# ── Prebuilt local-inference bundle (xp_wellys_libs) ──────────────────────────
+# whisper.cpp / llama.cpp / ggml / Piper / espeak-ng are compiled ONCE in the
+# sister repo and consumed here as a versioned, SHA256-verified binary bundle.
+# That is what turns the ~50 min cold release build into ~5-8 min. Bump
+# PREBUILT_LIBS_VERSION in lockstep with a bundle release.
+PREBUILT_LIBS_VERSION := $(shell cat PREBUILT_LIBS_VERSION)
+PREBUILT_LIBS_REPO    := rwellinger/xp_wellys_libs
+ifeq ($(OS),Darwin)
+    PREBUILT_LIBS_PLATFORM := arm64-macos
+    SHA256SUM              := shasum -a 256
+else
+    PREBUILT_LIBS_PLATFORM := linux-x64
+    SHA256SUM              := sha256sum
+endif
+# Version AND platform belong in the directory name. The sister repo
+# (xp_wellys_vfr_atc) extracts into a fixed vendor/prebuilt/xp_wellys_libs/,
+# where bumping the pin silently reuses the old tree -- it is pinned to 0.2.0
+# today while its manifest.txt still reads 0.1.0. A versioned path makes the
+# sentinel miss on a bump, so the new bundle is always fetched, and it lets a
+# mac and a linux tree coexist in one checkout.
+PREBUILT_LIBS_DIR := vendor/prebuilt/xp_wellys_libs-$(PREBUILT_LIBS_PLATFORM)-$(PREBUILT_LIBS_VERSION)
+PREBUILT_SENTINEL := $(PREBUILT_LIBS_DIR)/lib/libwhisper.a
+PREBUILT_TARBALL  := xp_wellys_libs-$(PREBUILT_LIBS_PLATFORM)-$(PREBUILT_LIBS_VERSION).tar.gz
+# Piper's runtime dictionary, shipped next to the .xpl. Comes from the bundle
+# now, not from a build tree.
+ESPEAK_DATA_DIR   := $(PREBUILT_LIBS_DIR)/share/espeak-ng-data
+
 # SkunkCrafts Updater staging dir (under build/, already gitignored).
 SKUNK_DIR := build/skunkcrafts
-
-# One sentinel for the three submodule trees (whisper.cpp, llama.cpp,
-# Piper). They are all pulled in by a single
-# `git submodule update --init --recursive` invocation, so tracking
-# only the first one is sufficient — if it's missing, the whole
-# submodule init runs and lands all three.
-SUBMODULES_SENTINEL := spikes/spike_whisper/third_party/whisper.cpp/CMakeLists.txt
 
 CATCH2_VERSION := 3.7.1
 
@@ -59,8 +79,8 @@ help:
 	@echo ""
 	@echo "  make                   Show this help (default)"
 	@echo "  make all               clean + format + build + lint"
-	@echo "  make setup             Init submodules + download X-Plane SDK, Dear ImGui, nlohmann/json, Catch2"
-	@echo "  make setup-cloud       Setup WITHOUT local-inference submodules (cloud-only; used by CI)"
+	@echo "  make setup             Download prebuilt xp_wellys_libs bundle + X-Plane SDK, Dear ImGui, nlohmann/json, Catch2"
+	@echo "  make setup-cloud       Setup WITHOUT the local-inference bundle (cloud-only; used by CI)"
 	@echo "  make build             Build universal plugin (arm64 local+cloud, x86_64 cloud-only) -> build/xp_wellys_atc.xpl"
 	@echo "  make repl              Build headless CLI -> build/atc_repl"
 	@echo "  make run-repl          Build + run the CLI (stdin transcripts)"
@@ -87,30 +107,28 @@ help:
 	@echo "  make help              Show this help"
 
 # ── Setup ─────────────────────────────────────────────────────────────────────
-setup: $(SUBMODULES_SENTINEL) $(SDK_SENTINEL) $(IMGUI_SENTINEL) $(JSON_SENTINEL) $(CATCH2_SENTINEL)
+setup: $(PREBUILT_SENTINEL) $(SDK_SENTINEL) $(IMGUI_SENTINEL) $(JSON_SENTINEL) $(CATCH2_SENTINEL)
 	@echo "Setup complete. Run 'make build' to compile."
 
-# Cloud-only setup: SDK + ImGui + json + Catch2, WITHOUT the local-inference
-# submodules (whisper.cpp / llama.cpp / Piper). Used by CI, which builds
-# cloud-only and never compiles those trees — skipping the multi-GB submodule
-# fetch is the bulk of the CI speedup.
+# Cloud-only setup: SDK + ImGui + json + Catch2, WITHOUT the prebuilt
+# local-inference bundle. Used by CI, which builds cloud-only and never links
+# whisper/llama/Piper. Keeping this target bundle-free is also what keeps the
+# "a cloud-only slice needs no bundle" invariant CI-tested.
 setup-cloud: $(SDK_SENTINEL) $(IMGUI_SENTINEL) $(JSON_SENTINEL) $(CATCH2_SENTINEL)
-	@echo "Cloud-only setup complete (no local-inference submodules)."
+	@echo "Cloud-only setup complete (no local-inference bundle)."
 
-$(SUBMODULES_SENTINEL):
-	@if [ ! -d .git ]; then \
-	    echo "ERROR: not a git checkout - submodules cannot be initialised."; \
-	    echo ""; \
-	    echo "If you downloaded a release ZIP, the third-party sources"; \
-	    echo "(whisper.cpp, llama.cpp, Piper) are not bundled. Re-clone with:"; \
-	    echo ""; \
-	    echo "    git clone --recurse-submodules <repo-url>"; \
-	    echo ""; \
-	    exit 1; \
-	fi
-	@echo "Initialising git submodules (whisper.cpp, llama.cpp, Piper)..."
-	@git submodule update --init --recursive
-	@echo "Submodules ready."
+$(PREBUILT_SENTINEL):
+	@echo "Downloading xp_wellys_libs bundle v$(PREBUILT_LIBS_VERSION) ($(PREBUILT_LIBS_PLATFORM))..."
+	@set -euo pipefail; \
+	mkdir -p $(PREBUILT_LIBS_DIR); \
+	curl -fsSL "https://github.com/$(PREBUILT_LIBS_REPO)/releases/download/v$(PREBUILT_LIBS_VERSION)/$(PREBUILT_TARBALL)" \
+	     -o $(PREBUILT_LIBS_DIR)/bundle.tar.gz; \
+	tar -xzf $(PREBUILT_LIBS_DIR)/bundle.tar.gz -C $(PREBUILT_LIBS_DIR); \
+	rm -f $(PREBUILT_LIBS_DIR)/bundle.tar.gz; \
+	echo "Verifying bundle SHA256 against manifest.txt..."; \
+	cd $(PREBUILT_LIBS_DIR)/lib && \
+	    grep -E '^[0-9a-f]{64}  ' ../manifest.txt | $(SHA256SUM) -c -
+	@echo "xp_wellys_libs bundle v$(PREBUILT_LIBS_VERSION) installed and verified."
 
 $(SDK_SENTINEL):
 	@echo "Downloading X-Plane SDK..."
@@ -186,7 +204,7 @@ $(CATCH2_SENTINEL):
 # (regular dev build); `release-build` sets it to `-DRELEASE=ON`.
 RELEASE_FLAG ?=
 
-build: $(SUBMODULES_SENTINEL) $(SDK_SENTINEL) $(IMGUI_SENTINEL) $(JSON_SENTINEL) $(CATCH2_SENTINEL)
+build: $(PREBUILT_SENTINEL) $(SDK_SENTINEL) $(IMGUI_SENTINEL) $(JSON_SENTINEL) $(CATCH2_SENTINEL)
 ifeq ($(OS),Darwin)
 	@echo "=== Building universal xp_wellys_atc (arm64 local+cloud, x86_64 cloud-only) ==="
 	@echo ""
@@ -215,7 +233,6 @@ ifeq ($(OS),Darwin)
 	@cp build-arm64/libpiper.dylib              build/
 	@cp build-arm64/libonnxruntime.1.22.0.dylib build/
 	@cp build-arm64/libonnxruntime.dylib        build/
-	@cp -R build-arm64/espeak_ng-install        build/ 2>/dev/null || true
 	@echo ""
 	@file build/xp_wellys_atc.xpl
 	@lipo -info build/xp_wellys_atc.xpl
@@ -235,7 +252,7 @@ endif
 # ── REPL (headless CLI) ───────────────────────────────────────────────────────
 repl: $(SDK_SENTINEL) $(IMGUI_SENTINEL) $(JSON_SENTINEL) $(CATCH2_SENTINEL)
 	@echo "=== Building atc_repl ==="
-	# SDK-free dev tool — LOCAL_INFERENCE=OFF keeps it submodule-independent.
+	# SDK-free dev tool — LOCAL_INFERENCE=OFF keeps it bundle-independent.
 	cmake -B build -DCMAKE_BUILD_TYPE=Release \
 	    -DXPWELLYS_USE_LOCAL_INFERENCE=OFF -Wno-dev
 	cmake --build build --target atc_repl --parallel
@@ -249,7 +266,7 @@ run-repl: repl
 # ── IFR REPL (headless IFR approach test CLI) ─────────────────────────────────
 ifr-repl: $(SDK_SENTINEL) $(IMGUI_SENTINEL) $(JSON_SENTINEL) $(CATCH2_SENTINEL)
 	@echo "=== Building atc_ifr_repl ==="
-	# SDK-free dev tool — LOCAL_INFERENCE=OFF keeps it submodule-independent.
+	# SDK-free dev tool — LOCAL_INFERENCE=OFF keeps it bundle-independent.
 	cmake -B build -DCMAKE_BUILD_TYPE=Release \
 	    -DXPWELLYS_USE_LOCAL_INFERENCE=OFF -Wno-dev
 	cmake --build build --target atc_ifr_repl --parallel
@@ -267,7 +284,7 @@ test-unit: $(SDK_SENTINEL) $(IMGUI_SENTINEL) $(JSON_SENTINEL) $(CATCH2_SENTINEL)
 	@echo "=== Building xp_wellys_atc unit tests ==="
 	# Tests exercise the SDK-free engine only; the local backends are never
 	# linked, so LOCAL_INFERENCE=OFF is functionally identical here and keeps
-	# the configure independent of the whisper/llama/Piper submodules.
+	# the configure independent of the prebuilt whisper/llama/Piper bundle.
 	cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=ON \
 	    -DXPWELLYS_USE_LOCAL_INFERENCE=OFF -Wno-dev
 	cmake --build build --target xp_wellys_atc_tests --parallel
@@ -350,14 +367,18 @@ install-data:
 	@# path resolved by model_paths::espeakng_data_dir(). Models live in
 	@# Resources/models/ and are downloaded by the user on first launch
 	@# (P5); espeak-ng-data is part of the .xpl bundle, NOT downloaded.
-	@if [ -d "build/espeak_ng-install/share/espeak-ng-data" ]; then \
+	@# It ships in the prebuilt bundle, so a missing dir means `make setup`
+	@# never ran — a hard error, not a warning. Piper would otherwise install
+	@# fine and fail to speak at runtime with no build-time hint.
+	@if [ -d "$(ESPEAK_DATA_DIR)" ]; then \
 	    mkdir -p "$(PLUGIN_DIR)/Resources/espeak-ng-data"; \
 	    rsync -a --delete \
-	        "build/espeak_ng-install/share/espeak-ng-data/" \
+	        "$(ESPEAK_DATA_DIR)/" \
 	        "$(PLUGIN_DIR)/Resources/espeak-ng-data/"; \
 	    echo "Installed: $(PLUGIN_DIR)/Resources/espeak-ng-data/"; \
 	else \
-	    echo "WARNING: build/espeak_ng-install/share/espeak-ng-data missing — run make build first"; \
+	    echo "ERROR: $(ESPEAK_DATA_DIR) missing — run 'make setup'"; \
+	    exit 1; \
 	fi
 	@# Models live under Resources/models/. Created empty here so the
 	@# in-plugin downloader has a target dir on first launch even
@@ -454,13 +475,14 @@ else
 	@cd "$(DIST_STAGE)/$(PLUGIN_ARCH_DIR)" && \
 	    [ -f libonnxruntime.so.1.22.0 ] && ln -sf libonnxruntime.so.1.22.0 libonnxruntime.so.1 || true
 endif
-	@# ── espeak-ng-data ──
-	@if [ -d "build/espeak_ng-install/share/espeak-ng-data" ]; then \
+	@# ── espeak-ng-data (from the prebuilt bundle) ──
+	@if [ -d "$(ESPEAK_DATA_DIR)" ]; then \
 	    mkdir -p "$(DIST_STAGE)/Resources/espeak-ng-data"; \
-	    rsync -a "build/espeak_ng-install/share/espeak-ng-data/" \
+	    rsync -a "$(ESPEAK_DATA_DIR)/" \
 	             "$(DIST_STAGE)/Resources/espeak-ng-data/"; \
 	else \
-	    echo "WARNING: espeak-ng-data missing — run 'make build' first"; \
+	    echo "ERROR: $(ESPEAK_DATA_DIR) missing — run 'make setup'"; \
+	    exit 1; \
 	fi
 	@mkdir -p "$(DIST_STAGE)/Resources/models"
 	@# ── Data files ──
@@ -514,7 +536,10 @@ LINT_TIDY_FLAGS    :=
 LINT_INSTALL_HINT  := sudo apt install clang-tidy
 endif
 
-lint: $(SUBMODULES_SENTINEL) $(SDK_SENTINEL) $(IMGUI_SENTINEL) $(JSON_SENTINEL) $(CATCH2_SENTINEL)
+# Needs the bundle: LINT_SOURCES includes whisper_stt/llama_lm/piper_tts, and
+# local inference defaults ON, so clang-tidy needs the bundle's headers. Turning
+# it off here would silently drop three TUs from the lint.
+lint: $(PREBUILT_SENTINEL) $(SDK_SENTINEL) $(IMGUI_SENTINEL) $(JSON_SENTINEL) $(CATCH2_SENTINEL)
 	@command -v clang-tidy >/dev/null 2>&1 || { \
 	    echo "clang-tidy not found. Install with: $(LINT_INSTALL_HINT)"; \
 	    exit 1; }
@@ -531,9 +556,13 @@ lint: $(SUBMODULES_SENTINEL) $(SDK_SENTINEL) $(IMGUI_SENTINEL) $(JSON_SENTINEL) 
 # Findings abort with a non-zero exit (`-fno-sanitize-recover=all`), so this
 # target is CI-friendly. Build dir is `build-sanitize/` — independent of
 # `build/` so Release artifacts stay untouched.
-sanitize: $(SUBMODULES_SENTINEL) $(SDK_SENTINEL) $(IMGUI_SENTINEL) $(JSON_SENTINEL) $(CATCH2_SENTINEL)
+sanitize: $(SDK_SENTINEL) $(IMGUI_SENTINEL) $(JSON_SENTINEL) $(CATCH2_SENTINEL)
 	@echo "=== Configuring sanitizer build (ASan + UBSan) ==="
-	cmake -B build-sanitize -DCMAKE_BUILD_TYPE=Debug -DXP_WELLYS_ATC_SANITIZE=ON -Wno-dev
+	@# LOCAL_INFERENCE=OFF: only atc_repl + the tests are built here, neither
+	@# links a backend, and the vendored libs are deliberately not instrumented
+	@# anyway — so this needs no prebuilt bundle.
+	cmake -B build-sanitize -DCMAKE_BUILD_TYPE=Debug -DXP_WELLYS_ATC_SANITIZE=ON \
+	    -DXPWELLYS_USE_LOCAL_INFERENCE=OFF -Wno-dev
 	@echo "=== Building atc_repl + xp_wellys_atc_tests with ASan + UBSan ==="
 	cmake --build build-sanitize --target atc_repl xp_wellys_atc_tests --parallel
 	@echo ""
