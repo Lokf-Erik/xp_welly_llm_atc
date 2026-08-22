@@ -95,7 +95,7 @@ jobs:
         run: make setup-cloud
 
       - name: Setup dependencies (downloads the prebuilt xp_wellys_libs bundle)
-          if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v') }}
+        if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v') }}
         run: make setup
 
       - name: Set up ccache
@@ -134,7 +134,7 @@ jobs:
           ccache --show-stats
 
       - name: Stage macOS slice
-          if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v') }}
+        if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v') }}
         run: |
           set -euo pipefail
           STAGE=dist/macos
@@ -167,7 +167,7 @@ jobs:
             "$STAGE/Resources/espeak-ng-data/"
 
       - name: Upload macOS slice
-          if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v') }}
+        if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v') }}
         uses: actions/upload-artifact@v4
         with:
           name: slice-macos
