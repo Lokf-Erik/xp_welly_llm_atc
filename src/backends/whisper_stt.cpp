@@ -112,7 +112,7 @@ bool WhisperStt::open(const std::string &model_path,
   whisper_context_params cparams = whisper_context_default_params();
 
 #if defined(__APPLE__)
-  cparams.use_gpu = true; // Metal on Apple Silicon
+  cparams.use_gpu = false; // TEST: Whisper CPU-only to avoid X-Plane GPU contention | true = Metal on Apple Silicon
 #elif defined(__linux__)
   {
     const uint64_t free_vram  = detect_gpu_free_vram_bytes();
