@@ -91,11 +91,11 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Setup dependencies (cloud-only — no bundle)
-        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        if: ${{ github.event_name == 'pull_request' }}
         run: make setup-cloud
 
       - name: Setup dependencies (downloads the prebuilt xp_wellys_libs bundle)
-        if: startsWith(github.ref, 'refs/tags/v')
+          if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v') }}
         run: make setup
 
       - name: Set up ccache
@@ -110,7 +110,7 @@ jobs:
       - name: Build (fast compile check, cloud-only)
         # PR / manual-dispatch runs only need to prove the macOS code compiles.
         # arm64 cloud-only finishes in a couple of minutes.
-        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        if: ${{ github.event_name == 'pull_request' }}
         run: |
           cmake -B build-mac-fast -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_OSX_ARCHITECTURES=arm64 \
@@ -127,14 +127,14 @@ jobs:
         # libonnxruntime.*.dylib next to it. -DRELEASE=ON bakes VERSION.txt
         # into both slices. Only the plugin's own TUs compile — whisper/llama/
         # Piper come prebuilt from the bundle `make setup` downloaded.
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v') }}
         run: |
           make build RELEASE_FLAG="-DRELEASE=ON"
           lipo -info build/xp_wellys_atc.xpl
           ccache --show-stats
 
       - name: Stage macOS slice
-        if: startsWith(github.ref, 'refs/tags/v')
+          if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v') }}
         run: |
           set -euo pipefail
           STAGE=dist/macos
@@ -167,7 +167,7 @@ jobs:
             "$STAGE/Resources/espeak-ng-data/"
 
       - name: Upload macOS slice
-        if: startsWith(github.ref, 'refs/tags/v')
+          if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v') }}
         uses: actions/upload-artifact@v4
         with:
           name: slice-macos
