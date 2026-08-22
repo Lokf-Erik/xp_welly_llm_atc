@@ -3086,24 +3086,33 @@ static int draw_phase_cb(XPLMDrawingPhase, int, void *) {
   glMatrixMode(GL_MODELVIEW);
   glPushMatrix();
 
-  glDisable(GL_DEPTH_TEST);
-  glDisable(GL_LIGHTING);
-  glEnable(GL_BLEND);
-  glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+ glDisable(GL_DEPTH_TEST);
+glDisable(GL_LIGHTING);
+glEnable(GL_BLEND);
+glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-  glViewport(0, 0, sw, sh);
-  glMatrixMode(GL_PROJECTION);
-  glLoadIdentity();
-  glOrtho(0, sw, sh, 0, -1, 1); // top-left origin for ImGui
-  glMatrixMode(GL_MODELVIEW);
-  glLoadIdentity();
+// Use X-Plane's actual framebuffer viewport in pixels.
+// On Retina/HiDPI displays this differs from the logical screen size.
+const int fb_w = prev_viewport[2];
+const int fb_h = prev_viewport[3];
 
-  // ImGui frame setup
-  ImGuiIO &io = ImGui::GetIO();
-  double now = get_xp_time();
-  io.DeltaTime = static_cast<float>(std::max(now - last_frame_time_, 0.001));
-  last_frame_time_ = now;
-  io.DisplaySize = ImVec2(static_cast<float>(sw), static_cast<float>(sh));
+glViewport(0, 0, fb_w, fb_h);
+glMatrixMode(GL_PROJECTION);
+glLoadIdentity();
+glOrtho(0, sw, sh, 0, -1, 1);
+glMatrixMode(GL_MODELVIEW);
+glLoadIdentity();
+
+// ImGui frame setup
+ImGuiIO &io = ImGui::GetIO();
+double now = get_xp_time();
+io.DeltaTime = static_cast<float>(std::max(now - last_frame_time_, 0.001));
+last_frame_time_ = now;
+io.DisplaySize = ImVec2(static_cast<float>(sw), static_cast<float>(sh));
+
+io.DisplayFramebufferScale =
+    ImVec2(sw > 0 ? static_cast<float>(fb_w) / static_cast<float>(sw) : 1.0f,
+           sh > 0 ? static_cast<float>(fb_h) / static_cast<float>(sh) : 1.0f);
 
   // Track mouse position every frame (hover support)
   int gmx, gmy;
