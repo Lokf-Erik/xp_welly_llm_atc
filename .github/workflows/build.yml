@@ -140,6 +140,7 @@ jobs:
           STAGE=dist/macos
           mkdir -p "$STAGE/mac_x64"
           mkdir -p "$STAGE/Resources/espeak-ng-data"
+          mkdir -p "$STAGE/data"
 
           # The arm64 slice resolves libpiper / libonnxruntime via @loader_path;
           # they are arm64-only and untouched by the x86_64 (cloud-only) slice
@@ -165,6 +166,11 @@ jobs:
           rsync -a --delete \
             "vendor/prebuilt/xp_wellys_libs-arm64-macos-$(cat PREBUILT_LIBS_VERSION)/share/espeak-ng-data/" \
             "$STAGE/Resources/espeak-ng-data/"
+          
+          # Include data-driven parser rules, templates and flight rules in
+          # manual macOS test artifacts. Keep settings.json out so installing
+          # a test build cannot overwrite the user's local settings.
+          cp -R data/atc_profiles "$STAGE/data/"
 
       - name: Upload macOS slice
         if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v') }}
