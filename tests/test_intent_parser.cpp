@@ -108,3 +108,46 @@ TEST_CASE("parse: control zone clearance readback classifies as READBACK", "[int
     auto m3 = parse("Joining instructions, runway 32, QNH 1013, Delta Charlie Hotel", ctx);
     REQUIRE(m3.intent == PilotIntent::READBACK);
 }
+
+TEST_CASE("parse: circuit position reports beat broad runway readback rule",
+          "[intent][parse][pattern]")
+{
+    auto ctx = airborne_ctx();
+
+    auto downwind = parse(
+        "Rostock Tower, Delta Lima Hotel Three Two, downwind runway two seven",
+        ctx);
+    REQUIRE(downwind.intent == PilotIntent::REPORT_POSITION_DOWNWIND);
+    REQUIRE(downwind.runway == "27");
+
+    auto left_downwind = parse(
+        "Delta Lima Hotel Three Two, left downwind runway two seven",
+        ctx);
+    REQUIRE(left_downwind.intent == PilotIntent::REPORT_POSITION_DOWNWIND);
+    REQUIRE(left_downwind.runway == "27");
+
+    auto base = parse(
+        "Rostock Tower, Delta Lima Hotel Three Two, turning base runway two seven",
+        ctx);
+    REQUIRE(base.intent == PilotIntent::REPORT_POSITION_BASE);
+    REQUIRE(base.runway == "27");
+
+    auto final = parse(
+        "Rostock Tower, Delta Lima Hotel Three Two, on final runway two seven",
+        ctx);
+    REQUIRE(final.intent == PilotIntent::REPORT_POSITION_FINAL);
+    REQUIRE(final.runway == "27");
+}
+
+TEST_CASE("parse: tower instruction readback containing report downwind stays readback",
+          "[intent][parse][pattern][readback]")
+{
+    auto ctx = airborne_ctx();
+
+    auto msg = parse(
+        "cleared for takeoff runway two seven, report left downwind, "
+        "Delta Lima Hotel Three Two",
+        ctx);
+
+    REQUIRE(msg.intent == PilotIntent::READBACK);
+}
