@@ -94,7 +94,7 @@ bool LlamaLm::open(const std::string &model_path) {
   llama_backend_init();
 
   llama_model_params mparams = llama_model_default_params();
-  mparams.n_gpu_layers = 999;
+  mparams.n_gpu_layers = 0; // Test: Llama CPU-only to avoid X-Plane GPU contention
   mparams.use_mmap = true;
   mparams.use_mlock = false;
 
@@ -188,7 +188,7 @@ std::string LlamaLm::respond(const std::string &system_prompt,
                              const std::string &user_text) {
   if (!ctx_ || !sampler_ || !model_ || !vocab_)
     return {};
-  logging::info("[%s] respond, %zu+%zu chars (llama.cpp, Metal)", kBackendTag,
+  logging::info("[%s] respond, %zu+%zu chars (llama.cpp, CPU)", kBackendTag,
                 system_prompt.size(), user_text.size());
 
   // Each call is a fresh turn. Drop everything from the previous one.
@@ -226,7 +226,7 @@ std::string LlamaLm::respond_constrained(const std::string &system_prompt,
   if (grammar_gbnf.empty())
     return respond(system_prompt, user_text);
   logging::info("[%s] respond_constrained (GBNF), %zu+%zu chars (llama.cpp, "
-                "Metal)",
+                "CPU)",
                 kBackendTag, system_prompt.size(), user_text.size());
 
   // Build a fresh sampler chain for this call only: grammar at the
