@@ -183,6 +183,30 @@
       ]
     },
 
+        {
+      "_note": "Pilot reports established in the downwind leg. Must precede the broad READBACK rule, which otherwise claims transmissions ending in a runway number.",
+      "intent": "REPORT_POSITION_DOWNWIND",
+      "confidence": 0.95,
+      "all": ["downwind"],
+      "none": ["takeoff", "take off", "report downwind"]
+    },
+
+    {
+      "_note": "Pilot reports established on base. Must precede the broad READBACK rule.",
+      "intent": "REPORT_POSITION_BASE",
+      "confidence": 0.95,
+      "all": ["base"],
+      "none": ["report base", "base leg to final"]
+    },
+
+    {
+      "_note": "Pilot reports established on final. Must precede the broad READBACK rule.",
+      "intent": "REPORT_POSITION_FINAL",
+      "confidence": 0.96,
+      "all": ["final"],
+      "none": ["report final"]
+    },
+
     {
       "_note": "Readback covers wilco/roger, frequency-change ack, sign-off phrases, control-zone clearances, taxi/clearance instruction echoes, takeoff/landing readbacks, VFR cross-country approvals, and transmissions ending in a runway-number token. 'holding point'/'hold short' only match when paired with a readback-context word (qnh/via/information) to avoid shadowing REPORT_HOLDING_SHORT. Explicit 'request' phrases (request taxi, request startup, request clearance) are excluded so a runway-token suffix does not swallow a service request. 'when ready' catches the frequency-handoff readback pattern ('Ground on 121.735, when ready') even when Voxtral/Whisper drops the word 'contact'. The compound none guard exempts 'contact'-prefixed phrases so 'contact ground on 121.735 when ready for departure' still fires READBACK even if 'departure' is present.",
       "intent": "READBACK",
