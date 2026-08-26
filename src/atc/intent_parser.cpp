@@ -817,7 +817,8 @@ PilotMessage parse(const std::string &transcript,
 
   // 3. Feature extraction (callsign / runway / VRP / position marker)
   msg.callsign = extract_callsign(text);
-  msg.runway = extract_runway(text);
+  msg.runway = extract_runway(text
+  msg.requested_flight_level = extract_flight_level(text);
   msg.vrp_name = airport_vrps::find_in_transcript(ctx.nearest_airport_id, text);
   msg.has_position = detect_has_position(text);
 
