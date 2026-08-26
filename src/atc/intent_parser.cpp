@@ -728,6 +728,8 @@ const char *intent_name(PilotIntent intent) {
     return "REPORT_HOLDING_SHORT";
   case PilotIntent::INITIAL_CALL_CENTER:
     return "INITIAL_CALL_CENTER";
+  case PilotIntent::REQUEST_LEVEL_CHANGE:
+    return "REQUEST_LEVEL_CHANGE";
   case PilotIntent::REQUEST_DESCENT:
     return "REQUEST_DESCENT";
   case PilotIntent::REQUEST_HIGHER:
@@ -785,6 +787,7 @@ PilotIntent intent_from_key(const std::string &key) {
       {"REQUEST_STARTUP", PilotIntent::REQUEST_STARTUP},
       {"REPORT_HOLDING_SHORT", PilotIntent::REPORT_HOLDING_SHORT},
       {"INITIAL_CALL_CENTER", PilotIntent::INITIAL_CALL_CENTER},
+      {"REQUEST_LEVEL_CHANGE", PilotIntent::REQUEST_LEVEL_CHANGE},
       {"REQUEST_DESCENT", PilotIntent::REQUEST_DESCENT},
       {"REQUEST_HIGHER", PilotIntent::REQUEST_HIGHER},
   };
