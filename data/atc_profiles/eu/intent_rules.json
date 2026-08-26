@@ -418,6 +418,28 @@
     },
 
     {
+      "_note": "Generic IFR level-change request with an explicit target level. Direction is determined later from current altitude versus requested level. Explicit higher/climb/lower/descent wording remains handled by the specialised rules below.",
+      "intent": "REQUEST_LEVEL_CHANGE",
+      "confidence": 0.94,
+      "none": [
+        "request higher",
+        "request climb",
+        "requesting higher",
+        "requesting climb",
+        "request descent",
+        "request descend",
+        "request lower",
+        "requesting descent",
+        "cleared",
+        "maintain"
+      ],
+      "any": [
+        { "all": ["request", "flight level"] },
+        { "all": ["request", " fl "] }
+      ]
+    },
+
+    {
       "_note": "IFR en-route climb request. Pilot asks Centre for a higher FL. Guards against clearances ('climb FL190') and initial calls.",
       "intent": "REQUEST_HIGHER",
       "confidence": 0.90,
