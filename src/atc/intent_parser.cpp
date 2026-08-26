@@ -204,6 +204,86 @@ static std::string extract_runway(const std::string &text) {
   return runway_num + suffix;
 }
 
+// Extract an ICAO flight level spoken digit by digit.
+//
+// Accepted examples:
+//   "flight level 240"                -> 240
+//   "flight level two four zero"      -> 240
+//   "fl 180"                          -> 180
+//   "fl one eight zero"               -> 180
+//
+// Cardinal forms such as "two hundred forty" are deliberately not accepted:
+// ICAO flight levels are spoken digit by digit.
+static int extract_flight_level(const std::string &text) {
+  std::size_t pos = text.find("flight level ");
+  std::size_t anchor_len = 13;
+
+  if (pos == std::string::npos) {
+    pos = text.find("fl ");
+    anchor_len = 3;
+  }
+
+  if (pos == std::string::npos)
+    return 0;
+
+  std::string after = text.substr(pos + anchor_len);
+
+  // Direct numeric form: "flight level 240".
+  std::string numeric;
+  for (char c : after) {
+    if (std::isdigit(static_cast<unsigned char>(c)) && numeric.size() < 3) {
+      numeric += c;
+    } else if (!numeric.empty()) {
+      break;
+    } else if (c != ' ') {
+      break;
+    }
+  }
+
+  if (numeric.size() >= 2) {
+    const int fl = std::stoi(numeric);
+    return fl >= 10 && fl <= 600 ? fl : 0;
+  }
+
+  // Spoken digit form: "flight level two four zero".
+  std::string digits;
+  std::string word;
+
+  auto append_digit = [&](const std::string &token) {
+    auto it = kSpokenDigits.find(token);
+    if (it != kSpokenDigits.end() && it->second.size() == 1 &&
+        digits.size() < 3) {
+      digits += it->second;
+      return true;
+    }
+    return false;
+  };
+
+  for (std::size_t i = 0; i <= after.size() && digits.size() < 3; ++i) {
+    const char c = i < after.size() ? after[i] : ' ';
+
+    if (std::isalpha(static_cast<unsigned char>(c))) {
+      word += c;
+      continue;
+    }
+
+    if (!word.empty()) {
+      if (!append_digit(word))
+        break;
+      word.clear();
+    }
+
+    if (c != ' ' && c != '-' && c != ',' && c != '.')
+      break;
+  }
+
+  if (digits.size() < 2)
+    return 0;
+
+  const int fl = std::stoi(digits);
+  return fl >= 10 && fl <= 600 ? fl : 0;
+}
+
 // ---------------------------------------------------------------------------
 // Callsign extraction
 // ---------------------------------------------------------------------------
