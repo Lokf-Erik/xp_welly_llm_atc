@@ -1146,17 +1146,14 @@ void process_transcript(Input in, Done done) {
       atc_state_machine::get_state() ==
           atc_state_machine::ATCState::IFR_ENROUTE_CRUISE) {
     s_pilot_requested_descent = true;
-    // Extract the requested FL so poll_enroute can match it against the
-    // navlog before deciding whether this is an en-route step or the TOD.
-    {
-      static const std::regex kFlRe(R"((?:flight\s+level|fl)\s+(\d{2,3}))",
-                                    std::regex_constants::icase);
-      std::smatch m;
-      if (std::regex_search(in.transcript, m, kFlRe))
-        s_pilot_requested_fl_ft = std::stoi(m[1].str()) * 100;
-      else
-        s_pilot_requested_fl_ft = 0;
-    }
+
+    // The parser accepts both "flight level 240" and the ICAO spoken
+    // form "flight level two four zero".
+    s_pilot_requested_fl_ft =
+        parsed.requested_flight_level > 0
+            ? parsed.requested_flight_level * 100
+            : 0;
+      
     done(Output{});
     return;
   }
