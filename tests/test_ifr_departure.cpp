@@ -369,3 +369,86 @@ TEST_CASE("freq guard: pending-handoff bypass does NOT apply to a mismatched "
     flight_phase::stop();
     openair_db::stop();
 }
+
+TEST_CASE("ifr enroute: generic flight level request issues level clearance",
+          "[ifr_enroute][level_change]")
+{
+    engine::reset();
+    atc_state_machine::init();
+    intent_parser::init();
+    flight_phase::init();
+    openair_db::init("");
+
+    // Begin the test established in cruise at FL180.
+    engine::training_jump_enroute(18000);
+
+    XPlaneContext ctx = make_ifr_ctx(16481.0f);
+    ctx.altitude_ft_msl = 18000.0f;
+    ctx.height_agl_ft = 16481.0f;
+    ctx.on_ground = false;
+    ctx.frequency_type = FrequencyType::APPROACH;
+
+    auto transmit = [&](const std::string &text) {
+        engine::Input in{};
+        in.transcript = text;
+        in.pilot_callsign = "Delta Lima Hotel Three Two";
+        in.quality = 0.90f;
+        in.ctx = &ctx;
+        in.now_secs = 100.0;
+
+        engine::Output out;
+        engine::process_transcript(
+            in, [&](engine::Output o) { out = std::move(o); });
+        return out;
+    };
+
+    // Neutral request above the current clearance must produce a climb.
+    auto climb = transmit(
+        "Bremen Radar, Delta Lima Hotel Three Two, "
+        "request flight level two four zero");
+
+    REQUIRE(climb.parsed.intent ==
+            intent_parser::PilotIntent::REQUEST_LEVEL_CHANGE);
+    REQUIRE(climb.parsed.requested_flight_level == 240);
+    REQUIRE(climb.response_text.find("climb flight level 240") !=
+            std::string::npos);
+    REQUIRE(engine::current_cleared_alt_ft() == 24000);
+    REQUIRE(atc_state_machine::is_readback_pending());
+    REQUIRE(atc_state_machine::last_clearance_text() ==
+            climb.response_text);
+
+    // Clear the first readback obligation before sending another request.
+    atc_state_machine::cancel_readback();
+    ctx.altitude_ft_msl = 24000.0f;
+
+    // A requested level below the current clearance must produce a descent,
+    // without starting the approach-descent sequence.
+    auto descent = transmit(
+        "Bremen Radar, Delta Lima Hotel Three Two, "
+        "request flight level one six zero");
+
+    REQUIRE(descent.parsed.intent ==
+            intent_parser::PilotIntent::REQUEST_LEVEL_CHANGE);
+    REQUIRE(descent.response_text.find("descend flight level 160") !=
+            std::string::npos);
+    REQUIRE(engine::current_cleared_alt_ft() == 16000);
+    REQUIRE(atc_state_machine::get_state() ==
+            ATCState::IFR_ENROUTE_CRUISE);
+
+    atc_state_machine::cancel_readback();
+    ctx.altitude_ft_msl = 16000.0f;
+
+    // Requesting the already assigned level must result in "maintain".
+    auto maintain = transmit(
+        "Bremen Radar, Delta Lima Hotel Three Two, "
+        "request FL one six zero");
+
+    REQUIRE(maintain.response_text.find("maintain flight level 160") !=
+            std::string::npos);
+    REQUIRE(engine::current_cleared_alt_ft() == 16000);
+
+    atc_state_machine::stop();
+    intent_parser::stop();
+    flight_phase::stop();
+    openair_db::stop();
+}
