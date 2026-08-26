@@ -151,3 +151,52 @@ TEST_CASE("parse: tower instruction readback containing report downwind stays re
 
     REQUIRE(msg.intent == PilotIntent::READBACK);
 }
+
+TEST_CASE("parse: extracts ICAO spoken flight levels",
+          "[intent][parse][ifr][flight-level]")
+{
+    auto ctx = airborne_ctx();
+
+    auto higher = parse(
+        "Bremen Radar, Delta Lima Hotel Three Two, "
+        "request higher flight level two four zero",
+        ctx);
+    REQUIRE(higher.intent == PilotIntent::REQUEST_HIGHER);
+    REQUIRE(higher.requested_flight_level == 240);
+
+    auto descent = parse(
+        "Bremen Radar, Delta Lima Hotel Three Two, "
+        "request descent flight level one zero zero",
+        ctx);
+    REQUIRE(descent.intent == PilotIntent::REQUEST_DESCENT);
+    REQUIRE(descent.requested_flight_level == 100);
+}
+
+TEST_CASE("parse: extracts numeric flight levels",
+          "[intent][parse][ifr][flight-level]")
+{
+    auto ctx = airborne_ctx();
+
+    auto fl_numeric = parse(
+        "request higher flight level 240",
+        ctx);
+    REQUIRE(fl_numeric.intent == PilotIntent::REQUEST_HIGHER);
+    REQUIRE(fl_numeric.requested_flight_level == 240);
+
+    auto fl_short = parse(
+        "request descent fl 100",
+        ctx);
+    REQUIRE(fl_short.intent == PilotIntent::REQUEST_DESCENT);
+    REQUIRE(fl_short.requested_flight_level == 100);
+}
+
+TEST_CASE("parse: rejects invalid flight levels",
+          "[intent][parse][ifr][flight-level]")
+{
+    auto ctx = airborne_ctx();
+
+    auto invalid = parse(
+        "request higher flight level nine nine nine",
+        ctx);
+    REQUIRE(invalid.requested_flight_level == 0);
+}
