@@ -200,3 +200,48 @@ TEST_CASE("parse: rejects invalid flight levels",
         ctx);
     REQUIRE(invalid.requested_flight_level == 0);
 }
+
+TEST_CASE("parse: generic level change request with spoken digits",
+          "[intent][parse][ifr][level-change]")
+{
+    auto ctx = airborne_ctx();
+
+    auto msg = parse(
+        "Bremen Radar, Delta Lima Hotel Three Two, "
+        "request flight level two four zero",
+        ctx);
+
+    REQUIRE(msg.intent == PilotIntent::REQUEST_LEVEL_CHANGE);
+    REQUIRE(msg.requested_flight_level == 240);
+}
+
+TEST_CASE("parse: generic level change request with numeric FL",
+          "[intent][parse][ifr][level-change]")
+{
+    auto ctx = airborne_ctx();
+
+    auto msg = parse(
+        "Delta Lima Hotel Three Two, request FL 180",
+        ctx);
+
+    REQUIRE(msg.intent == PilotIntent::REQUEST_LEVEL_CHANGE);
+    REQUIRE(msg.requested_flight_level == 180);
+}
+
+TEST_CASE("parse: directed climb and descent keep specialised intents",
+          "[intent][parse][ifr][level-change]")
+{
+    auto ctx = airborne_ctx();
+
+    auto higher = parse(
+        "request higher flight level two four zero",
+        ctx);
+    REQUIRE(higher.intent == PilotIntent::REQUEST_HIGHER);
+    REQUIRE(higher.requested_flight_level == 240);
+
+    auto lower = parse(
+        "request descent flight level one zero zero",
+        ctx);
+    REQUIRE(lower.intent == PilotIntent::REQUEST_DESCENT);
+    REQUIRE(lower.requested_flight_level == 100);
+}
