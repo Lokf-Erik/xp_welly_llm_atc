@@ -1199,7 +1199,7 @@ void process_transcript(Input in, Done done) {
       s_enroute_verify_target_ft = requested_ft;
 
       // The pilot must read back the new level clearance.
-      atc_state_machine::set_readback_pending(true);
+      atc_state_machine::arm_readback(out_lc.response_text);
 
       logging::info(
           "IFR en-route: REQUEST_LEVEL_CHANGE -> FL%d "
