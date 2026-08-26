@@ -76,6 +76,7 @@ struct PilotMessage {
   std::string callsign;
   std::string runway;
   std::string vrp_name;      // canonical VRP name if detected ("Whiskey")
+  int requested_flight_level = 0; // FL240 -> 240; 0 means none detected
   bool has_position = false; // pilot reported position (e.g. "on parking")
 };
 
