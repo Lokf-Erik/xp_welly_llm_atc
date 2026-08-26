@@ -1140,6 +1140,77 @@ void process_transcript(Input in, Done done) {
 
   using PI = intent_parser::PilotIntent;
 
+  // IFR en-route generic level-change request:
+  // "request flight level two four zero" without explicitly saying
+  // climb/higher or descend/lower.
+  if (parsed.intent == PI::REQUEST_LEVEL_CHANGE &&
+      atc_state_machine::get_state() ==
+          atc_state_machine::ATCState::IFR_ENROUTE_CRUISE) {
+    Output out_lc;
+    out_lc.parsed = parsed;
+
+    const std::string &session_cs =
+        atc_state_machine::session_callsign();
+    const std::string callsign =
+        session_cs.empty() ? in.pilot_callsign : session_cs;
+
+    const int requested_fl = parsed.requested_flight_level;
+    const int requested_ft = requested_fl * 100;
+    const int current_cleared_ft =
+        s_enroute_cleared_alt_ft > 0
+            ? s_enroute_cleared_alt_ft
+            : static_cast<int>(in.ctx->altitude_ft_msl);
+
+    char buf[160];
+
+    if (requested_fl <= 0) {
+      std::snprintf(
+          buf, sizeof(buf),
+          "%s, say again requested flight level.",
+          callsign.c_str());
+      out_lc.response_text = buf;
+    } else {
+      const int difference_ft =
+          requested_ft - current_cleared_ft;
+
+      if (difference_ft > 500) {
+        std::snprintf(
+            buf, sizeof(buf),
+            "%s, climb flight level %d.",
+            callsign.c_str(), requested_fl);
+      } else if (difference_ft < -500) {
+        std::snprintf(
+            buf, sizeof(buf),
+            "%s, descend flight level %d.",
+            callsign.c_str(), requested_fl);
+      } else {
+        std::snprintf(
+            buf, sizeof(buf),
+            "%s, maintain flight level %d.",
+            callsign.c_str(), requested_fl);
+      }
+
+      out_lc.response_text = buf;
+      s_enroute_cleared_alt_ft = requested_ft;
+
+      // Enable the existing altitude monitoring for the new clearance.
+      s_enroute_alt_warn_cooldown = 180.0f;
+      s_enroute_verify_query_sent = false;
+      s_enroute_verify_target_ft = requested_ft;
+
+      // The pilot must read back the new level clearance.
+      atc_state_machine::set_readback_pending(true);
+
+      logging::info(
+          "IFR en-route: REQUEST_LEVEL_CHANGE -> FL%d "
+          "(previous clearance %d ft)",
+          requested_fl, current_cleared_ft);
+    }
+
+    done(std::move(out_lc));
+    return;
+  }
+
   // IFR en-route descent request: set flag so poll_enroute fires the
   // clearance on the next frame. No state-machine response here.
   if (parsed.intent == PI::REQUEST_DESCENT &&
@@ -1927,7 +1998,8 @@ void process_transcript(Input in, Done done) {
         parsed.intent == PI::REQUEST_REPEAT   ||
         parsed.intent == PI::GO_AROUND        ||
         parsed.intent == PI::LEAVING_FREQUENCY ||
-        parsed.intent == PI::REQUEST_DESCENT;
+        parsed.intent == PI::REQUEST_DESCENT   ||
+        parsed.intent == PI::REQUEST_LEVEL_CHANGE;
     if (!escape_intent) {
       // Extract expected frequency from the pending clearance text.
       bool auto_cleared = false;
