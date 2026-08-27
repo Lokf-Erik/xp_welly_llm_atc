@@ -231,11 +231,14 @@ static int extract_flight_level(const std::string &text) {
   // Direct numeric form: "flight level 240".
   std::string numeric;
   for (char c : after) {
-    if (std::isdigit(static_cast<unsigned char>(c)) && numeric.size() < 3) {
+    if (std::isdigit(static_cast<unsigned char>(c)) &&
+        numeric.size() < 3) {
       numeric += c;
-    } else if (!numeric.empty()) {
-      break;
-    } else if (c != ' ') {
+    } else if (std::isspace(static_cast<unsigned char>(c))) {
+      // Whisper sometimes emits ICAO digits separately:
+      // "flight level 2 2 0".
+      continue;
+    } else {
       break;
     }
   }
