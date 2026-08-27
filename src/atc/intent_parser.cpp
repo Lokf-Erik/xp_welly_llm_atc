@@ -458,22 +458,6 @@ static std::string extract_direct_waypoint(const std::string &text) {
     if (word.empty())
       continue;
 
-    // Compact identifier already produced by STT: "BULOL" or "DH615".
-    bool compact = word.size() >= 2 && word.size() <= 5;
-    for (char c : word) {
-      if (!std::isalnum(static_cast<unsigned char>(c))) {
-        compact = false;
-        break;
-      }
-    }
-
-    if (compact && ident.empty()) {
-      for (char c : word)
-        ident += static_cast<char>(
-            std::toupper(static_cast<unsigned char>(c)));
-      break;
-    }
-
     // NATO alphabet words must be checked before compact identifiers:
     // "Delta" is the spoken letter D, not a waypoint named DELTA.
     auto phonetic = std::find(
