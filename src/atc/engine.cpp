@@ -1143,9 +1143,12 @@ void process_transcript(Input in, Done done) {
   // IFR en-route generic level-change request:
   // "request flight level two four zero" without explicitly saying
   // climb/higher or descend/lower.
-  if (parsed.intent == PI::REQUEST_LEVEL_CHANGE &&
-      atc_state_machine::get_state() ==
-          atc_state_machine::ATCState::IFR_ENROUTE_CRUISE) {
+  const auto level_change_state = atc_state_machine::get_state();
+    if (parsed.intent == PI::REQUEST_LEVEL_CHANGE &&
+      (level_change_state ==
+           atc_state_machine::ATCState::IFR_RADAR_CONTACT ||
+       level_change_state ==
+           atc_state_machine::ATCState::IFR_ENROUTE_CRUISE)) {
     Output out_lc;
     out_lc.parsed = parsed;
 
