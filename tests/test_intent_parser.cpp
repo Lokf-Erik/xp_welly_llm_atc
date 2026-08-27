@@ -245,3 +245,31 @@ TEST_CASE("parse: directed climb and descent keep specialised intents",
     REQUIRE(lower.intent == PilotIntent::REQUEST_DESCENT);
     REQUIRE(lower.requested_flight_level == 100);
 }
+
+TEST_CASE("parse: extracts compact direct waypoint",
+          "[intent][parse][ifr][direct]")
+{
+    auto ctx = airborne_ctx();
+
+    auto msg = parse(
+        "Bremen Radar, Delta Lima Hotel Three Two, "
+        "request direct BULOL",
+        ctx);
+
+    REQUIRE(msg.intent == PilotIntent::REQUEST_DIRECT);
+    REQUIRE(msg.requested_waypoint == "BULOL");
+}
+
+TEST_CASE("parse: extracts NATO-spelled direct waypoint",
+          "[intent][parse][ifr][direct]")
+{
+    auto ctx = airborne_ctx();
+
+    auto msg = parse(
+        "Bremen Radar, Delta Lima Hotel Three Two, "
+        "request direct Delta Hotel Six One Five",
+        ctx);
+
+    REQUIRE(msg.intent == PilotIntent::REQUEST_DIRECT);
+    REQUIRE(msg.requested_waypoint == "DH615");
+}
