@@ -819,6 +819,8 @@ const char *intent_name(PilotIntent intent) {
     return "INITIAL_CALL_CENTER";
   case PilotIntent::REQUEST_LEVEL_CHANGE:
     return "REQUEST_LEVEL_CHANGE";
+  case PilotIntent::REQUEST_DIRECT:
+    return "REQUEST_DIRECT";
   case PilotIntent::REQUEST_DESCENT:
     return "REQUEST_DESCENT";
   case PilotIntent::REQUEST_HIGHER:
@@ -877,6 +879,7 @@ PilotIntent intent_from_key(const std::string &key) {
       {"REPORT_HOLDING_SHORT", PilotIntent::REPORT_HOLDING_SHORT},
       {"INITIAL_CALL_CENTER", PilotIntent::INITIAL_CALL_CENTER},
       {"REQUEST_LEVEL_CHANGE", PilotIntent::REQUEST_LEVEL_CHANGE},
+      {"REQUEST_DIRECT", PilotIntent::REQUEST_DIRECT},
       {"REQUEST_DESCENT", PilotIntent::REQUEST_DESCENT},
       {"REQUEST_HIGHER", PilotIntent::REQUEST_HIGHER},
   };
@@ -911,6 +914,7 @@ PilotMessage parse(const std::string &transcript,
   msg.callsign = extract_callsign(text);
   msg.runway = extract_runway(text);
   msg.requested_flight_level = extract_flight_level(text);
+  msg.requested_waypoint = extract_direct_waypoint(text);
   msg.vrp_name = airport_vrps::find_in_transcript(ctx.nearest_airport_id, text);
   msg.has_position = detect_has_position(text);
 
