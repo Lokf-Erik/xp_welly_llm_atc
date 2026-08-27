@@ -298,92 +298,6 @@ static const std::vector<std::string> kPhoneticAlphabet = {
     "victor", "whiskey", "xray",    "yankee", "zulu",
 };
 
-// Extract a requested direct-to waypoint.
-//
-// Accepted examples:
-//   "request direct BULOL"                         -> BULOL
-//   "request direct to waypoint DH615"             -> DH615
-//   "request direct Delta Hotel Six One Five"      -> DH615
-//
-// Waypoint identifiers are limited to 2-5 characters here. This prevents
-// the following pilot callsign from being appended to the requested fix.
-static std::string extract_direct_waypoint(const std::string &text) {
-  const std::vector<std::string> anchors = {
-      "request direct to waypoint ",
-      "request direct waypoint ",
-      "request direct to ",
-      "request direct ",
-  };
-
-  std::size_t pos = std::string::npos;
-  std::size_t anchor_len = 0;
-
-  for (const auto &anchor : anchors) {
-    pos = text.find(anchor);
-    if (pos != std::string::npos) {
-      anchor_len = anchor.size();
-      break;
-    }
-  }
-
-  if (pos == std::string::npos)
-    return {};
-
-  const std::string after = text.substr(pos + anchor_len);
-  const auto words = split_words(after);
-  std::string ident;
-
-  for (const auto &raw_word : words) {
-    std::string word;
-    for (char c : raw_word) {
-      if (std::isalnum(static_cast<unsigned char>(c)))
-        word += static_cast<char>(
-            std::tolower(static_cast<unsigned char>(c)));
-    }
-
-    if (word.empty())
-      continue;
-
-    // Compact identifier already produced by STT: "BULOL" or "DH615".
-    bool compact = word.size() >= 2 && word.size() <= 5;
-    for (char c : word) {
-      if (!std::isalnum(static_cast<unsigned char>(c))) {
-        compact = false;
-        break;
-      }
-    }
-
-    if (compact && ident.empty()) {
-      for (char c : word)
-        ident += static_cast<char>(
-            std::toupper(static_cast<unsigned char>(c)));
-      break;
-    }
-
-    // NATO alphabet word: "Delta" -> D.
-    auto phonetic = std::find(
-        kPhoneticAlphabet.begin(), kPhoneticAlphabet.end(), word);
-    if (phonetic != kPhoneticAlphabet.end()) {
-      ident += static_cast<char>(
-          'A' + std::distance(kPhoneticAlphabet.begin(), phonetic));
-    } else {
-      // Spoken digit: "six" -> 6.
-      auto digit = kSpokenDigits.find(word);
-      if (digit != kSpokenDigits.end() &&
-          digit->second.size() == 1) {
-        ident += digit->second;
-      } else {
-        break;
-      }
-    }
-
-    if (ident.size() == 5)
-      break;
-  }
-
-  return ident.size() >= 2 && ident.size() <= 5 ? ident : std::string{};
-}
-
 // Voxtral STT commonly mishears NATO phonetic alphabet words.
 // Applied word-by-word before intent scoring and before storing the transcript
 // so the corrected word appears both in the ATC display and callsign matching.
@@ -497,6 +411,93 @@ static std::vector<std::string> split_words(const std::string &s) {
     words.push_back(word);
   return words;
 }
+
+// Extract a requested direct-to waypoint.
+//
+// Accepted examples:
+//   "request direct BULOL"                         -> BULOL
+//   "request direct to waypoint DH615"             -> DH615
+//   "request direct Delta Hotel Six One Five"      -> DH615
+//
+// Waypoint identifiers are limited to 2-5 characters here. This prevents
+// the following pilot callsign from being appended to the requested fix.
+static std::string extract_direct_waypoint(const std::string &text) {
+  const std::vector<std::string> anchors = {
+      "request direct to waypoint ",
+      "request direct waypoint ",
+      "request direct to ",
+      "request direct ",
+  };
+
+  std::size_t pos = std::string::npos;
+  std::size_t anchor_len = 0;
+
+  for (const auto &anchor : anchors) {
+    pos = text.find(anchor);
+    if (pos != std::string::npos) {
+      anchor_len = anchor.size();
+      break;
+    }
+  }
+
+  if (pos == std::string::npos)
+    return {};
+
+  const std::string after = text.substr(pos + anchor_len);
+  const auto words = split_words(after);
+  std::string ident;
+
+  for (const auto &raw_word : words) {
+    std::string word;
+    for (char c : raw_word) {
+      if (std::isalnum(static_cast<unsigned char>(c)))
+        word += static_cast<char>(
+            std::tolower(static_cast<unsigned char>(c)));
+    }
+
+    if (word.empty())
+      continue;
+
+    // Compact identifier already produced by STT: "BULOL" or "DH615".
+    bool compact = word.size() >= 2 && word.size() <= 5;
+    for (char c : word) {
+      if (!std::isalnum(static_cast<unsigned char>(c))) {
+        compact = false;
+        break;
+      }
+    }
+
+    if (compact && ident.empty()) {
+      for (char c : word)
+        ident += static_cast<char>(
+            std::toupper(static_cast<unsigned char>(c)));
+      break;
+    }
+
+    // NATO alphabet word: "Delta" -> D.
+    auto phonetic = std::find(
+        kPhoneticAlphabet.begin(), kPhoneticAlphabet.end(), word);
+    if (phonetic != kPhoneticAlphabet.end()) {
+      ident += static_cast<char>(
+          'A' + std::distance(kPhoneticAlphabet.begin(), phonetic));
+    } else {
+      // Spoken digit: "six" -> 6.
+      auto digit = kSpokenDigits.find(word);
+      if (digit != kSpokenDigits.end() &&
+          digit->second.size() == 1) {
+        ident += digit->second;
+      } else {
+        break;
+      }
+    }
+
+    if (ident.size() == 5)
+      break;
+  }
+
+  return ident.size() >= 2 && ident.size() <= 5 ? ident : std::string{};
+}
+
 
 static std::string apply_phonetic_aliases(const std::string &s) {
   // Word-level pass.
