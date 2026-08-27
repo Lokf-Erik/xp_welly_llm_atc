@@ -418,6 +418,21 @@
     },
 
     {
+      "_note": "Pilot requests direct routing to a named waypoint. The engine validates the extracted identifier against the remaining SimBrief route before issuing a clearance.",
+      "intent": "REQUEST_DIRECT",
+      "confidence": 0.96,
+      "none": [
+        "cleared direct",
+        "proceed direct",
+        "direct when able"
+      ],
+      "any": [
+        "request direct",
+        "requesting direct"
+      ]
+    },
+
+    {
       "_note": "Generic IFR level-change request with an explicit target level. Direction is determined later from current altitude versus requested level. Explicit higher/climb/lower/descent wording remains handled by the specialised rules below.",
       "intent": "REQUEST_LEVEL_CHANGE",
       "confidence": 0.94,
