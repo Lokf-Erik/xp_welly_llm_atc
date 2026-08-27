@@ -208,6 +208,21 @@
     },
 
     {
+      "_note": "Pilot requests direct routing to a named waypoint. The engine validates the extracted identifier against the remaining SimBrief route before issuing a clearance.",
+      "intent": "REQUEST_DIRECT",
+      "confidence": 0.96,
+      "none": [
+        "cleared direct",
+        "proceed direct",
+        "direct when able"
+      ],
+      "any": [
+        "request direct",
+        "requesting direct"
+      ]
+    },
+
+    {
       "_note": "Readback covers wilco/roger, frequency-change ack, sign-off phrases, control-zone clearances, taxi/clearance instruction echoes, takeoff/landing readbacks, VFR cross-country approvals, and transmissions ending in a runway-number token. 'holding point'/'hold short' only match when paired with a readback-context word (qnh/via/information) to avoid shadowing REPORT_HOLDING_SHORT. Explicit 'request' phrases (request taxi, request startup, request clearance) are excluded so a runway-token suffix does not swallow a service request. 'when ready' catches the frequency-handoff readback pattern ('Ground on 121.735, when ready') even when Voxtral/Whisper drops the word 'contact'. The compound none guard exempts 'contact'-prefixed phrases so 'contact ground on 121.735 when ready for departure' still fires READBACK even if 'departure' is present.",
       "intent": "READBACK",
       "confidence": 0.90,
@@ -593,22 +608,6 @@
       "set_intent": "INITIAL_CALL_TOWER",
       "set_confidence": 0.93
     },
-
-    {
-      "_note": "Pilot requests direct routing to a named waypoint. The engine validates the extracted identifier against the remaining SimBrief route before issuing a clearance.",
-      "intent": "REQUEST_DIRECT",
-      "confidence": 0.96,
-      "none": [
-        "cleared direct",
-        "proceed direct",
-        "direct when able"
-      ],
-      "any": [
-        "request direct",
-        "requesting direct"
-      ]
-    },
-    
     {
       "_note": "IFR approach check-in with QNH: standard EUROCONTROL phraseology includes QNH in the initial call to Approach ('November 111RC, Melun Approach, descending 4500 feet, QNH 1025'). The READBACK rule matches 'qnh' at 0.90, shadowing INITIAL_CALL_APPROACH at 0.88. Promote only when (1) the text contains 'approach' (Approach facility keyword, as opposed to a plain descent readback), and (2) no readback is currently pending (readback_pending=false guards against a navlog step-down readback being misclassified). Note: has_facility is not a valid adjustment-rule key — use text_contains instead.",
       "if": {
