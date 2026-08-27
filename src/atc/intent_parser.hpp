@@ -66,6 +66,7 @@ enum class PilotIntent {
   INITIAL_CALL_CENTER,   // en-route initial call to Area Control / UIR Centre
                          // ("Control", "Centre")
   REQUEST_LEVEL_CHANGE, // "request flight level two four zero"
+  REQUEST_DIRECT,       // "request direct BULOL" / "direct Delta Hotel Six One Five"
   REQUEST_DESCENT,       // "request descent" / "ready to descend" — IFR en-route
   REQUEST_HIGHER,        // "request higher" / "for higher" — IFR en-route climb request
 };
@@ -78,6 +79,7 @@ struct PilotMessage {
   std::string runway;
   std::string vrp_name;      // canonical VRP name if detected ("Whiskey")
   int requested_flight_level = 0; // FL240 -> 240; 0 means none detected
+  std::string requested_waypoint; // canonical uppercase ident, e.g. "DH615"
   bool has_position = false; // pilot reported position (e.g. "on parking")
 };
 
