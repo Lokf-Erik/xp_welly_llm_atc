@@ -637,7 +637,8 @@ std::string consume_readback_reminder(double now_secs) {
     // IFR in-flight states where resetting to IDLE would destroy poll
     // statics and kill the approach / descent / cruise flow.
     const bool is_ifr_inflight =
-        std::strcmp(cur, "IFR/ENROUTE_CRUISE") == 0    ||
+        std::strcmp(cur, "IFR/RADAR_CONTACT") == 0      ||
+        std::strcmp(cur, "IFR/ENROUTE_CRUISE") == 0     ||
         std::strcmp(cur, "IFR/DESCENT") == 0            ||
         std::strcmp(cur, "IFR/ARRIVAL") == 0            ||
         std::strcmp(cur, "IFR/APPROACH_CONTACT") == 0   ||
