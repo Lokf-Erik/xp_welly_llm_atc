@@ -418,21 +418,6 @@
     },
 
     {
-      "_note": "Pilot requests direct routing to a named waypoint. The engine validates the extracted identifier against the remaining SimBrief route before issuing a clearance.",
-      "intent": "REQUEST_DIRECT",
-      "confidence": 0.96,
-      "none": [
-        "cleared direct",
-        "proceed direct",
-        "direct when able"
-      ],
-      "any": [
-        "request direct",
-        "requesting direct"
-      ]
-    },
-
-    {
       "_note": "Generic IFR level-change request with an explicit target level. Direction is determined later from current altitude versus requested level. Explicit higher/climb/lower/descent wording remains handled by the specialised rules below.",
       "intent": "REQUEST_LEVEL_CHANGE",
       "confidence": 0.94,
@@ -608,6 +593,22 @@
       "set_intent": "INITIAL_CALL_TOWER",
       "set_confidence": 0.93
     },
+
+    {
+      "_note": "Pilot requests direct routing to a named waypoint. The engine validates the extracted identifier against the remaining SimBrief route before issuing a clearance.",
+      "intent": "REQUEST_DIRECT",
+      "confidence": 0.96,
+      "none": [
+        "cleared direct",
+        "proceed direct",
+        "direct when able"
+      ],
+      "any": [
+        "request direct",
+        "requesting direct"
+      ]
+    },
+    
     {
       "_note": "IFR approach check-in with QNH: standard EUROCONTROL phraseology includes QNH in the initial call to Approach ('November 111RC, Melun Approach, descending 4500 feet, QNH 1025'). The READBACK rule matches 'qnh' at 0.90, shadowing INITIAL_CALL_APPROACH at 0.88. Promote only when (1) the text contains 'approach' (Approach facility keyword, as opposed to a plain descent readback), and (2) no readback is currently pending (readback_pending=false guards against a navlog step-down readback being misclassified). Note: has_facility is not a valid adjustment-rule key — use text_contains instead.",
       "if": {
