@@ -170,6 +170,7 @@ static int s_route_step_idx = 0;
 // when the aircraft climbs back above FL100 so the advisory re-fires on the
 // next descent through FL100.
 static bool s_speed_250_warned = false;
+static float s_speed_250_overspeed_sec = 0.0f;
 
 static int round_to_fl(int feet); // defined near poll_sid_climb
 static void init_route_fixes(const xplane_context::XPlaneContext &ctx); // defined near poll_approach
@@ -332,6 +333,7 @@ void reset() {
   s_departure_apt_lat = 0.0;
   s_departure_apt_lon = 0.0;
   s_speed_250_warned = false;
+  s_speed_250_overspeed_sec = 0.0f;
   s_ground_last_announced_runway.clear();
   s_assigned_star_name.clear();
   s_assigned_dest_icao.clear();
@@ -4318,45 +4320,59 @@ pick_direct_fix(const xplane_context::XPlaneContext &ctx,
 }
 
 // ── poll_speed_restriction ────────────────────────────────────────────────
-// ICAO standard: all aircraft must maintain 250 kt IAS or less below FL100.
-// Continuously enforced: fires "reduce speed, 250 knots or less" whenever the
-// aircraft is below FL100 (10 000 ft MSL) AND IAS > 255 kt (5 kt hysteresis).
-// After firing, the flag is held UNTIL the pilot complies (IAS <= 245 kt) —
-// then a subsequent overspeed re-fires the advisory. Also resets when the
-// aircraft climbs back above FL100 (+ 500 ft hysteresis), so a fresh descent
-// re-arms the check even if the pilot never complied at high altitude.
-bool poll_speed_restriction(const xplane_context::XPlaneContext &ctx,
+// Below FL100, tolerate up to 260 kt and require more than 260 kt for ten
+// continuous seconds before issuing "reduce speed, 250 knots or less".
+// This avoids false warnings during brief acceleration excursions while an
+// aircraft establishes a climb.
+bool poll_speed_restriction(const xplane_context::XPlaneContext &ctx, float dt,
                             std::string *out_text) {
   using AS = atc_state_machine::ATCState;
   auto state = atc_state_machine::get_state();
-  if (state != AS::IFR_RADAR_CONTACT   &&
-      state != AS::IFR_ENROUTE_CRUISE  &&
+  if (state != AS::IFR_RADAR_CONTACT    &&
+      state != AS::IFR_ENROUTE_CRUISE   &&
       state != AS::IFR_APPROACH_CONTACT &&
       state != AS::IFR_APPROACH_DESCENT &&
       state != AS::IFR_APPROACH_TOWER)
     return false;
 
-  // Reset flag when aircraft climbs back above FL100 (+ 500 ft hysteresis)
-  // OR when the pilot complies (IAS <= 245 kt, 5 kt hysteresis below 250).
-  // Compliance-reset lets the advisory re-fire if the pilot subsequently
-  // exceeds 250 kt again while still below FL100.
-  // Reset on either condition: climbed back above FL100 (+500 ft hysteresis)
-  // OR pilot complied (IAS <= 245 kt). Combined — identical reset body.
-  if (ctx.altitude_ft_msl > 10500.0f || ctx.indicated_airspeed_kts <= 245.0f)
+  // Reset after definite compliance or after climbing clear of the
+  // restriction.
+  if (ctx.altitude_ft_msl > 10500.0f ||
+      ctx.indicated_airspeed_kts <= 250.0f) {
     s_speed_250_warned = false;
+    s_speed_250_overspeed_sec = 0.0f;
+  }
 
   if (s_speed_250_warned)
     return false;
-  if (ctx.altitude_ft_msl >= 10000.0f)
+
+  if (ctx.altitude_ft_msl >= 10000.0f) {
+    s_speed_250_overspeed_sec = 0.0f;
     return false;
-  if (ctx.indicated_airspeed_kts <= 255.0f)
+  }
+
+  // Allow up to +10 kt. The ten-second timer must be continuous: returning
+  // to 260 kt or less starts it over.
+  if (ctx.indicated_airspeed_kts <= 260.0f) {
+    s_speed_250_overspeed_sec = 0.0f;
+    return false;
+  }
+
+  s_speed_250_overspeed_sec += std::max(0.0f, dt);
+  if (s_speed_250_overspeed_sec < 10.0f)
     return false;
 
   s_speed_250_warned = true;
+  s_speed_250_overspeed_sec = 0.0f;
+
   const std::string &cs = atc_state_machine::session_callsign();
-  const std::string &callsign = cs.empty() ? settings::pilot_callsign() : cs;
-  logging::info("IFR speed: %.0f ft IAS %.0f kts — issuing 250 kt restriction",
-                ctx.altitude_ft_msl, ctx.indicated_airspeed_kts);
+  const std::string &callsign =
+      cs.empty() ? settings::pilot_callsign() : cs;
+
+  logging::info(
+      "IFR speed: %.0f ft IAS %.0f kts for 10 s — issuing 250 kt restriction",
+      ctx.altitude_ft_msl, ctx.indicated_airspeed_kts);
+
   if (out_text) {
     char buf[128];
     std::snprintf(buf, sizeof(buf),
@@ -4364,6 +4380,7 @@ bool poll_speed_restriction(const xplane_context::XPlaneContext &ctx,
                   callsign.c_str());
     *out_text = buf;
   }
+
   return true;
 }
 
