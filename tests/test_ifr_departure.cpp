@@ -15,6 +15,7 @@
 #include "core/xplane_context.hpp"
 #include "data/openair_db.hpp"
 #include "data/simbrief_ofp.hpp"
+#include "persistence/settings.hpp"
 
 #include <catch2/catch_amalgamated.hpp>
 
@@ -534,8 +535,8 @@ TEST_CASE("ifr enroute: requested direct advances remaining route",
     REQUIRE(approved.response_text.find("cleared direct BUMIL") !=
             std::string::npos);
     REQUIRE(approved.response_text.find(
-                "Foxtrot Foxtrot Alpha One Zero Five One") !=
-            std::string::npos);
+                settings::pilot_callsign()) !=
+            std::string::npos);;
     REQUIRE(atc_state_machine::is_readback_pending());
     REQUIRE(atc_state_machine::last_clearance_text() ==
             approved.response_text);
