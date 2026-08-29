@@ -190,3 +190,27 @@ TEST_CASE("state_from_name round-trips every ATCState", "[state_history]")
     REQUIRE(atc_state_machine::state_from_name(qualified) == s);
   }
 }
+
+TEST_CASE("history: airborne IFR disregard keeps radar state and clears readback",
+          "[state_history][ifr]")
+{
+  atc_state_machine::init();
+  atc_state_machine::set_state(ATCState::IFR_RADAR_CONTACT);
+  atc_state_machine::arm_readback(
+      "Foxtrot Five One, reduce speed, 250 knots or less.");
+
+  xplane_context::XPlaneContext ctx{};
+  ctx.on_ground = false;
+  ctx.latitude = 53.0;
+  ctx.longitude = 10.0;
+  ctx.airport_lat = 53.6;
+  ctx.airport_lon = 9.9;
+
+  atc_state_machine::disregard(
+      ctx, flight_phase::FlightPhase::CLIMB, 100.0);
+
+  REQUIRE(atc_state_machine::get_state() ==
+          ATCState::IFR_RADAR_CONTACT);
+  REQUIRE_FALSE(atc_state_machine::is_readback_pending());
+  REQUIRE(atc_state_machine::last_clearance_text().empty());
+}
