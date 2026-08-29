@@ -275,16 +275,34 @@ static int extract_speed(const std::string &norm) {
 // clearance has already been confirmed as a speed instruction; otherwise a
 // wind readback could be mistaken for an assigned speed.
 static int extract_speed_readback(const std::string &norm) {
-  int speed = extract_speed(norm);
-  if (speed > 0)
-    return speed;
-
   static const std::regex kKnots(
-      R"(\b(\d{2,3})\s*(?:knots?|kts?)\b)",
+      R"(\b(\d(?:\s*\d){1,2})\s*(?:knots?|kts?)\b)",
       std::regex_constants::icase);
   std::smatch m;
-  if (std::regex_search(norm, m, kKnots))
-    return std::stoi(m[1]);
+  if (std::regex_search(norm, m, kKnots)) {
+    std::string digits = m[1].str();
+    digits.erase(
+        std::remove_if(
+            digits.begin(), digits.end(),
+            [](unsigned char c) { return std::isspace(c); }),
+        digits.end());
+    return std::stoi(digits);
+  }
+
+  // Also accept "speed 250", but do not scan across later words into the
+  // callsign ("reducing speed Foxtrot Five One" must not become speed 51).
+  static const std::regex kAfterSpeed(
+      R"(\bspeed\s*,?\s*(\d(?:\s*\d){1,2})\b)",
+      std::regex_constants::icase);
+  if (std::regex_search(norm, m, kAfterSpeed)) {
+    std::string digits = m[1].str();
+    digits.erase(
+        std::remove_if(
+            digits.begin(), digits.end(),
+            [](unsigned char c) { return std::isspace(c); }),
+        digits.end());
+    return std::stoi(digits);
+  }
 
   return -1;
 }
