@@ -192,14 +192,32 @@ static std::string extract_freq(const std::string &norm) {
   return {};
 }
 
-// Returns squawk code as 4-char string or "" if absent.
+// Returns squawk code as a 4-character string or "" if absent.
+//
+// Accepts both compact and spaced digit forms:
+//   "squawk 2777"    -> "2777"
+//   "squawk 2 7 7 7" -> "2777"
+//   "squawk 27 77"   -> "2777"
+//
+// Whisper frequently emits spoken ICAO digits with spaces, while the generic
+// digit compactor may leave partially joined groups such as "27 77".
 static std::string extract_squawk(const std::string &norm) {
-  static const std::regex kRe(R"(\bsquawk\s*(\d{4})\b)",
-                               std::regex_constants::icase);
+  static const std::regex kRe(
+      R"(\bsquawk\s*(\d(?:\s*\d){3})\b)",
+      std::regex_constants::icase);
+
   std::smatch m;
-  if (std::regex_search(norm, m, kRe))
-    return m[1].str();
-  return {};
+  if (!std::regex_search(norm, m, kRe))
+    return {};
+
+  std::string digits = m[1].str();
+  digits.erase(
+      std::remove_if(
+          digits.begin(), digits.end(),
+          [](unsigned char c) { return std::isspace(c); }),
+      digits.end());
+
+  return digits.size() == 4 ? digits : std::string{};
 }
 
 // ── Formatting helpers ────────────────────────────────────────────────────
