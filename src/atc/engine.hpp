@@ -166,11 +166,10 @@ bool poll_sid_climb(const xplane_context::XPlaneContext &ctx, float dt,
                     std::string *out_text);
 
 // ICAO speed restriction: issues "reduce speed to 250 knots" when the aircraft
-// is below FL100 and IAS > 255 kt (5 kt hysteresis). Fires once per descent
-// through FL100; resets automatically when the aircraft climbs back above FL100.
+// remains above 260 kt for 10 seconds below FL100. Brief acceleration excursions
+// are ignored. Resets automatically after compliance or above FL100.
 // Active in IFR_RADAR_CONTACT, IFR_ENROUTE_CRUISE, and IFR_APPROACH_CONTACT.
-// No readback required.
-bool poll_speed_restriction(const xplane_context::XPlaneContext &ctx,
+bool poll_speed_restriction(const xplane_context::XPlaneContext &ctx, float dt,
                             std::string *out_text);
 
 // IFR en-route management: fires while in IFR_ENROUTE_CRUISE (on Centre).
