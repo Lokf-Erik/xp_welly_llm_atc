@@ -572,3 +572,34 @@ TEST_CASE("ifr enroute: requested direct advances remaining route",
     flight_phase::stop();
     openair_db::stop();
 }
+
+TEST_CASE("IFR speed restriction ignores brief overspeed excursions",
+          "[ifr_departure][speed]")
+{
+    engine::reset();
+    atc_state_machine::init();
+    atc_state_machine::set_state(ATCState::IFR_RADAR_CONTACT);
+
+    XPlaneContext ctx = make_ifr_ctx(3000.0f);
+    ctx.indicated_airspeed_kts = 261.0f;
+    std::string text;
+
+    // Nine seconds above 260 kt are not enough.
+    for (int second = 0; second < 9; ++second)
+        REQUIRE_FALSE(
+            engine::poll_speed_restriction(ctx, 1.0f, &text));
+
+    // Returning to 260 kt resets the continuous timer.
+    ctx.indicated_airspeed_kts = 260.0f;
+    REQUIRE_FALSE(
+        engine::poll_speed_restriction(ctx, 1.0f, &text));
+
+    // A fresh continuous ten-second overspeed must trigger the restriction.
+    ctx.indicated_airspeed_kts = 270.0f;
+    for (int second = 0; second < 9; ++second)
+        REQUIRE_FALSE(
+            engine::poll_speed_restriction(ctx, 1.0f, &text));
+
+    REQUIRE(engine::poll_speed_restriction(ctx, 1.0f, &text));
+    REQUIRE(text.find("250 knots or less") != std::string::npos);
+}
