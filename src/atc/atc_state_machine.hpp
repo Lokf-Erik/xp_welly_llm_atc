@@ -94,12 +94,11 @@ void init();
 void stop();
 void reset();
 
-// Pilot-driven "Disregard" — drops the current ATC dialog and lands on
-// a flow-appropriate state instead of blind IDLE: airborne pilots near
-// their last airport keep PATTERN_ENTRY; airborne pilots away from any
-// airport return to EN_ROUTE; pilots on the ground go all the way to
-// IDLE. Always preserves the runway lock when staying airborne so the
-// pilot doesn't have to re-negotiate it.
+// Pilot-driven "Disregard" — drops the current ATC dialog. Active airborne
+// IFR flights retain their exact state, route and controller continuity.
+// Other airborne pilots near their last airport keep PATTERN_ENTRY; airborne
+// pilots away from an airport return to EN_ROUTE; pilots on the ground go to
+// IDLE. Always preserves the runway lock while airborne.
 void disregard(const xplane_context::XPlaneContext &ctx,
                flight_phase::FlightPhase phase, double now_secs);
 
