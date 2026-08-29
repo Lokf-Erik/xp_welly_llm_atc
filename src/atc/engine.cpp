@@ -1140,6 +1140,121 @@ void process_transcript(Input in, Done done) {
 
   using PI = intent_parser::PilotIntent;
 
+  // IFR en-route pilot-requested direct-to.
+  //
+  // The requested fix must be part of the remaining SimBrief route. This
+  // avoids clearing an ambiguous or already-passed fix and lets the existing
+  // route tracker continue correctly from the direct-to target.
+  const auto direct_request_state = atc_state_machine::get_state();
+  if (parsed.intent == PI::REQUEST_DIRECT &&
+      (direct_request_state ==
+           atc_state_machine::ATCState::IFR_RADAR_CONTACT ||
+       direct_request_state ==
+           atc_state_machine::ATCState::IFR_ENROUTE_CRUISE)) {
+    Output out_direct;
+    out_direct.parsed = parsed;
+
+    const std::string &session_cs =
+        atc_state_machine::session_callsign();
+    const std::string callsign =
+        session_cs.empty() ? in.pilot_callsign : session_cs;
+    const std::string target = parsed.requested_waypoint;
+
+    char buf[192];
+
+    if (target.empty()) {
+      std::snprintf(
+          buf, sizeof(buf),
+          "%s, say again requested direct waypoint.",
+          callsign.c_str());
+      out_direct.response_text = buf;
+    } else {
+      const auto ofp = simbrief_ofp::get();
+
+      if (!ofp.valid || ofp.navlog.empty()) {
+        std::snprintf(
+            buf, sizeof(buf),
+            "%s, unable direct %s, flight plan route unavailable.",
+            callsign.c_str(), target.c_str());
+        out_direct.response_text = buf;
+
+        logging::info(
+            "IFR en-route: REQUEST_DIRECT %s unable "
+            "(no SimBrief route)",
+            target.c_str());
+      } else {
+        // Initialise the existing ordered route tracker if it has not yet
+        // been needed during this flight. It removes fixes already behind
+        // the aircraft and retains the remaining en-route/arrival sequence.
+        if (s_route_fixes.empty())
+          init_route_fixes(*in.ctx);
+
+        int target_idx = -1;
+        for (int i = s_route_fix_idx;
+             i < static_cast<int>(s_route_fixes.size()); ++i) {
+          if (s_route_fixes[i].ident == target) {
+            target_idx = i;
+            break;
+          }
+        }
+
+        if (target_idx >= 0) {
+          // All route fixes between the aircraft and target are bypassed.
+          // The target itself remains current until the aircraft reaches it.
+          s_route_fix_idx = target_idx;
+
+          // Do not issue the automatic random en-route direct afterwards:
+          // the pilot has already requested and received one.
+          s_enroute_direct_issued = true;
+
+          std::snprintf(
+              buf, sizeof(buf),
+              "%s, cleared direct %s.",
+              callsign.c_str(), target.c_str());
+          out_direct.response_text = buf;
+
+          // This clearance supersedes any older outstanding en-route
+          // readback and becomes the new expected readback.
+          atc_state_machine::cancel_readback();
+          atc_state_machine::arm_readback(out_direct.response_text);
+
+          logging::info(
+              "IFR en-route: REQUEST_DIRECT %s approved "
+              "(route idx=%d)",
+              target.c_str(), target_idx);
+        } else {
+          bool exists_earlier = false;
+          for (int i = 0;
+               i < s_route_fix_idx &&
+               i < static_cast<int>(s_route_fixes.size());
+               ++i) {
+            if (s_route_fixes[i].ident == target) {
+              exists_earlier = true;
+              break;
+            }
+          }
+
+          std::snprintf(
+              buf, sizeof(buf),
+              exists_earlier
+                  ? "%s, unable direct %s, waypoint already passed."
+                  : "%s, unable direct %s, waypoint not in remaining route.",
+              callsign.c_str(), target.c_str());
+          out_direct.response_text = buf;
+
+          logging::info(
+              "IFR en-route: REQUEST_DIRECT %s unable (%s)",
+              target.c_str(),
+              exists_earlier ? "already passed"
+                             : "not in remaining route");
+        }
+      }
+    }
+
+    done(std::move(out_direct));
+    return;
+  }
+
   // IFR en-route generic level-change request:
   // "request flight level two four zero" without explicitly saying
   // climb/higher or descend/lower.
@@ -2002,7 +2117,8 @@ void process_transcript(Input in, Done done) {
         parsed.intent == PI::GO_AROUND        ||
         parsed.intent == PI::LEAVING_FREQUENCY ||
         parsed.intent == PI::REQUEST_DESCENT   ||
-        parsed.intent == PI::REQUEST_LEVEL_CHANGE;
+        parsed.intent == PI::REQUEST_LEVEL_CHANGE ||
+        parsed.intent == PI::REQUEST_DIRECT;
     if (!escape_intent) {
       // Extract expected frequency from the pending clearance text.
       bool auto_cleared = false;
