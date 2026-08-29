@@ -565,6 +565,29 @@ void disregard(const xplane_context::XPlaneContext &ctx,
     return;
   }
 
+  // During an active IFR flight, Disregard cancels only the current dialog or
+  // pending readback. It must not demote the flight into the VFR cross-country
+  // flow or discard radar/route continuity.
+  switch (g_state.state_) {
+  case ATCState::IFR_DEPARTURE_CLEARED:
+  case ATCState::IFR_FREQ_HANDOFF:
+  case ATCState::IFR_EN_ROUTE:
+  case ATCState::IFR_RADAR_CONTACT:
+  case ATCState::IFR_ENROUTE_CRUISE:
+  case ATCState::IFR_DESCENT:
+  case ATCState::IFR_ARRIVAL:
+  case ATCState::IFR_APPROACH_CONTACT:
+  case ATCState::IFR_APPROACH_DESCENT:
+  case ATCState::IFR_APPROACH_TOWER:
+  case ATCState::IFR_LANDING_CLEARED:
+    logging::info("Disregard: keeping active IFR state %s",
+                  state_name(g_state.state_));
+    return;
+  default:
+    break;
+  }
+
+
   // Airborne. Decide between PATTERN_ENTRY (still over the home
   // pattern) and EN_ROUTE (transit). The user's last airport ICAO is
   // tracked in ctx; if we don't have a position fix yet, fall back to
