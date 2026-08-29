@@ -14,6 +14,7 @@
 #include "atc/intent_parser.hpp"
 #include "core/xplane_context.hpp"
 #include "data/openair_db.hpp"
+#include "data/simbrief_ofp.hpp"
 
 #include <catch2/catch_amalgamated.hpp>
 
@@ -447,6 +448,124 @@ TEST_CASE("ifr enroute: generic flight level request issues level clearance",
             std::string::npos);
     REQUIRE(engine::current_cleared_alt_ft() == 16000);
 
+    atc_state_machine::stop();
+    intent_parser::stop();
+    flight_phase::stop();
+    openair_db::stop();
+}
+
+TEST_CASE("ifr enroute: requested direct advances remaining route",
+          "[ifr_enroute][direct]")
+{
+    engine::reset();
+    atc_state_machine::init();
+    intent_parser::init();
+    flight_phase::init();
+    openair_db::init("");
+    simbrief_ofp::clear();
+
+    // Three route fixes north of the aircraft. BUMIL is the requested
+    // middle fix; ODIKI must afterwards count as already passed.
+    simbrief_ofp::OfpData ofp{};
+    ofp.valid = true;
+    ofp.origin_icao = "LFLP";
+    ofp.destination_icao = "EDDH";
+    ofp.cruise_alt_ft = 18000;
+
+    simbrief_ofp::NavlogFix first{};
+    first.ident = "ODIKI";
+    first.via_airway = "DCT";
+    first.lat = 46.10;
+    first.lon = 6.1028;
+    first.alt_ft = 18000;
+    first.stage = "CRZ";
+
+    simbrief_ofp::NavlogFix target{};
+    target.ident = "BUMIL";
+    target.via_airway = "DCT";
+    target.lat = 46.30;
+    target.lon = 6.1028;
+    target.alt_ft = 18000;
+    target.stage = "CRZ";
+
+    simbrief_ofp::NavlogFix following{};
+    following.ident = "RARUP";
+    following.via_airway = "DCT";
+    following.lat = 46.50;
+    following.lon = 6.1028;
+    following.alt_ft = 18000;
+    following.stage = "CRZ";
+
+    ofp.navlog = {first, target, following};
+    simbrief_ofp::set(ofp);
+
+    engine::training_jump_enroute(18000);
+
+    XPlaneContext ctx = make_ifr_ctx(16481.0f);
+    ctx.altitude_ft_msl = 18000.0f;
+    ctx.height_agl_ft = 16481.0f;
+    ctx.on_ground = false;
+    ctx.heading_true = 0.0f;
+    ctx.frequency_type = FrequencyType::APPROACH;
+
+    auto transmit = [&](const std::string &text) {
+        engine::Input in{};
+        in.transcript = text;
+        in.pilot_callsign =
+            "Foxtrot Foxtrot Alpha One Zero Five One";
+        in.quality = 0.90f;
+        in.ctx = &ctx;
+        in.now_secs = 100.0;
+
+        engine::Output out;
+        engine::process_transcript(
+            in, [&](engine::Output o) { out = std::move(o); });
+        return out;
+    };
+
+    // A future point in the loaded route is approved.
+    auto approved = transmit(
+        "Bremen Radar, Foxtrot Foxtrot Alpha One Zero Five One, "
+        "request direct BUMIL");
+
+    REQUIRE(approved.parsed.intent ==
+            intent_parser::PilotIntent::REQUEST_DIRECT);
+    REQUIRE(approved.parsed.requested_waypoint == "BUMIL");
+    REQUIRE(approved.response_text.find("cleared direct BUMIL") !=
+            std::string::npos);
+    REQUIRE(approved.response_text.find(
+                "Foxtrot Foxtrot Alpha One Zero Five One") !=
+            std::string::npos);
+    REQUIRE(atc_state_machine::is_readback_pending());
+    REQUIRE(atc_state_machine::last_clearance_text() ==
+            approved.response_text);
+
+    atc_state_machine::cancel_readback();
+
+    // A point skipped by the approved direct is now considered passed.
+    auto passed = transmit(
+        "Bremen Radar, Foxtrot Foxtrot Alpha One Zero Five One, "
+        "request direct ODIKI");
+
+    REQUIRE(passed.parsed.intent ==
+            intent_parser::PilotIntent::REQUEST_DIRECT);
+    REQUIRE(passed.response_text.find("waypoint already passed") !=
+            std::string::npos);
+    REQUIRE_FALSE(atc_state_machine::is_readback_pending());
+
+    // A point absent from the route must not be invented or approved.
+    auto unknown = transmit(
+        "Bremen Radar, Foxtrot Foxtrot Alpha One Zero Five One, "
+        "request direct ZZZZZ");
+
+    REQUIRE(unknown.parsed.intent ==
+            intent_parser::PilotIntent::REQUEST_DIRECT);
+    REQUIRE(unknown.response_text.find(
+                "waypoint not in remaining route") !=
+            std::string::npos);
+    REQUIRE_FALSE(atc_state_machine::is_readback_pending());
+
+    simbrief_ofp::clear();
     atc_state_machine::stop();
     intent_parser::stop();
     flight_phase::stop();
