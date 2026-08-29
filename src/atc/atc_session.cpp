@@ -1370,7 +1370,7 @@ void update() {
 
     // ICAO speed restriction: 250 kt or less below FL100.
     std::string speed_text;
-    if (engine::poll_speed_restriction(ctx_now, &speed_text) &&
+    if (engine::poll_speed_restriction(ctx_now, dt, &speed_text) &&
         !speed_text.empty()) {
       float active_freq = (ctx_now.active_com == 1) ? ctx_now.com1_freq_mhz
                                                     : ctx_now.com2_freq_mhz;
