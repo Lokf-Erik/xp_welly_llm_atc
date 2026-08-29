@@ -37,3 +37,58 @@ TEST_CASE("readback verifier accepts spoken squawk digits",
     REQUIRE(incorrect.front().expected == "2777");
     REQUIRE(incorrect.front().stated == "2776");
 }
+
+TEST_CASE("readback verifier accepts natural speed acknowledgements",
+          "[readback][speed]")
+{
+    const std::string clearance =
+        "Foxtrot Five One, reduce speed, 250 knots or less.";
+
+    SECTION("value followed by knots")
+    {
+        auto result = readback_verifier::check(
+            clearance,
+            "250 knots or less Foxtrot Five One");
+
+        REQUIRE(result.empty());
+    }
+
+    SECTION("spoken digit sequence")
+    {
+        auto result = readback_verifier::check(
+            clearance,
+            "TWO FIVE ZERO KNOTS OR LESS FOXTROT FIVE ONE");
+
+        REQUIRE(result.empty());
+    }
+
+    SECTION("reducing to assigned speed")
+    {
+        auto result = readback_verifier::check(
+            clearance,
+            "reducing to 250 knots Foxtrot Five One");
+
+        REQUIRE(result.empty());
+    }
+
+    SECTION("reducing speed acknowledgement")
+    {
+        auto result = readback_verifier::check(
+            clearance,
+            "reducing speed Foxtrot Five One");
+
+        REQUIRE(result.empty());
+    }
+
+    SECTION("incorrect speed is rejected")
+    {
+        auto result = readback_verifier::check(
+            clearance,
+            "reducing to 240 knots Foxtrot Five One");
+
+        REQUIRE(result.size() == 1);
+        REQUIRE(result.front().field == "speed");
+        REQUIRE(result.front().expected == "250");
+        REQUIRE(result.front().stated == "240");
+    }
+}
