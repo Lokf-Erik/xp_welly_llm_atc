@@ -258,10 +258,9 @@ static std::string fl_to_speech(int fl) {
 
 // ── Public API ────────────────────────────────────────────────────────────
 
-// Returns the assigned speed in knots (e.g. 250) or -1 if the text carries no
-// speed restriction. Anchored on "speed" so a wind read-out ("... 01 knots")
-// never matches; the digits may follow "speed" after filler ("speed, 250",
-// "reduce speed to 250 knots").
+// Returns the assigned speed in knots (e.g. 250) from an ATC clearance.
+// Keep this anchored on "speed" so a wind report such as "wind 240 degrees,
+// 12 knots" is never mistaken for a speed restriction.
 static int extract_speed(const std::string &norm) {
   static const std::regex kRe(R"(speed[a-z, ]*?(\d{2,3}))",
                               std::regex_constants::icase);
@@ -269,6 +268,34 @@ static int extract_speed(const std::string &norm) {
   if (std::regex_search(norm, m, kRe))
     return std::stoi(m[1]);
   return -1;
+}
+
+// Pilot readbacks normally put the value before "knots" and often omit the
+// word "speed": "250 knots or less". This must only be used after the ATC
+// clearance has already been confirmed as a speed instruction; otherwise a
+// wind readback could be mistaken for an assigned speed.
+static int extract_speed_readback(const std::string &norm) {
+  int speed = extract_speed(norm);
+  if (speed > 0)
+    return speed;
+
+  static const std::regex kKnots(
+      R"(\b(\d{2,3})\s*(?:knots?|kts?)\b)",
+      std::regex_constants::icase);
+  std::smatch m;
+  if (std::regex_search(norm, m, kKnots))
+    return std::stoi(m[1]);
+
+  return -1;
+}
+
+// When the only pending instruction is the speed restriction, a pilot may
+// acknowledge compliance without repeating the number: "reducing speed".
+static bool acknowledges_speed_reduction(const std::string &norm) {
+  static const std::regex kReducing(
+      R"(\b(?:reduce|reducing)\s+(?:the\s+)?speed\b)",
+      std::regex_constants::icase);
+  return std::regex_search(norm, kReducing);
 }
 
 std::vector<Mismatch> check(const std::string &clearance_text,
@@ -363,8 +390,11 @@ std::vector<Mismatch> check(const std::string &clearance_text,
   // unverified so the wrong readback was silently accepted (LIMF -> LFLP).
   int cl_spd = extract_speed(cl);
   if (cl_spd > 0) {
-    int rb_spd = extract_speed(rb);
-    if (rb_spd <= 0 || rb_spd != cl_spd) {
+    int rb_spd = extract_speed_readback(rb);
+    const bool reducing_without_value =
+        rb_spd <= 0 && acknowledges_speed_reduction(rb);
+    if (!reducing_without_value &&
+        (rb_spd <= 0 || rb_spd != cl_spd)) {
       Mismatch m;
       m.field    = "speed";
       m.expected = std::to_string(cl_spd);
@@ -414,8 +444,12 @@ std::vector<std::string> matched_fields(const std::string &clearance_text,
     ok.push_back("squawk");
 
   int cl_spd = extract_speed(cl);
-  if (cl_spd > 0 && extract_speed(rb) == cl_spd)
-    ok.push_back("speed");
+  if (cl_spd > 0) {
+    int rb_spd = extract_speed_readback(rb);
+    if (rb_spd == cl_spd ||
+        (rb_spd <= 0 && acknowledges_speed_reduction(rb)))
+      ok.push_back("speed");
+  }
 
   return ok;
 }
