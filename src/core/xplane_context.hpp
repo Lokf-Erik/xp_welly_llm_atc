@@ -230,6 +230,13 @@ bool has_ground_freq_for(const std::string &icao);
 std::string nearest_taxiway_phrase(const std::string &icao,
                                    double lat, double lon);
 
+// Returns a routed taxiway sequence from the aircraft's current position to
+// the holding point for `runway`, e.g. "via Alpha, Bravo and Echo". Empty when
+// apt.dat has no connected named route, allowing callers to use a safe
+// holding-point-only fallback.
+std::string taxi_route_phrase(const std::string &icao, double lat, double lon,
+                              const std::string &runway);
+
 } // namespace xplane_context
 
 #endif // XPLANE_CONTEXT_HPP
