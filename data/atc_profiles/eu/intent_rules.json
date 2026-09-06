@@ -228,6 +228,46 @@
     },
 
     {
+      "_note": "Pilot requests radar vectors for an instrument or visual approach. Must precede approach-type and READBACK rules.",
+      "intent": "REQUEST_VECTORS",
+      "confidence": 0.98,
+      "any": [
+        "request vectors",
+        "requesting vectors",
+        "radar vectors",
+        "vectors for the approach",
+        "vectors for ils",
+        "vectors for visual",
+        "need vectors",
+        { "all": ["vector", { "any": ["approach", "runway", "ils", "visual"] }] }
+      ]
+    },
+
+    {
+      "_note": "Pilot requests a particular approach type or runway. Expected-approach questions are excluded and handled by REQUEST_EXPECTED_APPROACH.",
+      "intent": "REQUEST_APPROACH_TYPE",
+      "confidence": 0.97,
+      "none": [
+        "expect",
+        "expected",
+        "which approach",
+        "what approach",
+        "advise approach",
+        "advise runway"
+      ],
+      "any": [
+        { "all": ["request", "ils"] },
+        { "all": ["request", "rnav"] },
+        { "all": ["request", "visual"] },
+        { "all": ["request", "approach", "runway"] },
+        "request ils approach",
+        "request rnav approach",
+        "request visual approach",
+        "request runway change"
+      ]
+    },
+    
+    {
       "_note": "Pilot asks which destination runway or approach to expect. Must precede READBACK because the question commonly contains approach and a runway number.",
       "intent": "REQUEST_EXPECTED_APPROACH",
       "confidence": 0.97,
