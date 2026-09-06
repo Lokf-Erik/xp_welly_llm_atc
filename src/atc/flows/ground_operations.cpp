@@ -355,6 +355,20 @@ std::map<std::string, std::string> build_vars(const PilotMessage &msg,
        }()},
       {"entry_vrp", msg.vrp_name},
       {"position_remark", position_remark},
+      {"pushback_approval", [&]() -> std::string {
+        std::string text = msg.raw_transcript;
+        std::transform(
+            text.begin(), text.end(), text.begin(),
+            [](unsigned char c) {
+              return static_cast<char>(std::tolower(c));
+            });
+
+        if (text.find("pushback") != std::string::npos ||
+            text.find("push back") != std::string::npos)
+          return std::string(", pushback approved");
+
+        return std::string();
+      }()},
       {"tower_handoff_phrase", tower_handoff_phrase},
       {"nearest_taxiway",
        xplane_context::nearest_taxiway_phrase(ctx.nearest_airport_id,
