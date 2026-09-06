@@ -1235,6 +1235,171 @@ void process_transcript(Input in, Done done) {
     return;
   }
     
+  // Pilot-requested ILS, RNAV or visual approach. Unlike the advisory
+  // expected-approach query, an approved request changes the stored arrival
+  // assignment used by the later descent and approach flows.
+  const auto approach_request_state =
+      atc_state_machine::get_state();
+
+  if (parsed.intent == PI::REQUEST_APPROACH_TYPE &&
+      (approach_request_state ==
+           atc_state_machine::ATCState::IFR_RADAR_CONTACT ||
+       approach_request_state ==
+           atc_state_machine::ATCState::IFR_ENROUTE_CRUISE ||
+       approach_request_state ==
+           atc_state_machine::ATCState::IFR_DESCENT ||
+       approach_request_state ==
+           atc_state_machine::ATCState::IFR_ARRIVAL ||
+       approach_request_state ==
+           atc_state_machine::ATCState::IFR_APPROACH_CONTACT ||
+       approach_request_state ==
+           atc_state_machine::ATCState::IFR_APPROACH_DESCENT)) {
+    Output out_request;
+    out_request.parsed = parsed;
+
+    const std::string &session_cs =
+        atc_state_machine::session_callsign();
+    const std::string callsign =
+        session_cs.empty() ? in.pilot_callsign : session_cs;
+
+    const auto ofp = simbrief_ofp::get();
+    const std::string destination =
+        !ctx.ifr_destination.empty()
+            ? ctx.ifr_destination
+            : ofp.destination_icao;
+
+    std::string runway =
+        !parsed.runway.empty()
+            ? parsed.runway
+            : s_assigned_landing_runway;
+
+    if (runway.empty() &&
+        !destination.empty() &&
+        !ctx.cifp_dir.empty()) {
+      runway = cifp_reader::best_runway_for_approach(
+          ctx.cifp_dir,
+          destination,
+          ctx.wind_direction_deg,
+          ctx.visibility_m);
+    }
+
+    const std::string request_text =
+        to_lower_copy(parsed.raw_transcript);
+
+    const bool wants_visual =
+        request_text.find("visual") != std::string::npos;
+    const bool wants_ils =
+        request_text.find("ils") != std::string::npos;
+    const bool wants_rnav =
+        request_text.find("rnav") != std::string::npos;
+
+    std::string requested_type;
+    if (wants_ils)
+      requested_type = "ILS";
+    else if (wants_rnav)
+      requested_type = "RNAV";
+
+    cifp_reader::ApproachInfo selected;
+
+    if (!destination.empty() &&
+        !runway.empty() &&
+        !ctx.cifp_dir.empty()) {
+      if (!requested_type.empty()) {
+        selected = cifp_reader::approach_for_type(
+            ctx.cifp_dir,
+            destination,
+            runway,
+            requested_type);
+      } else if (wants_visual) {
+        // Keep an instrument procedure as navigation backup for the visual
+        // approach. Prefer ILS, otherwise use the normal best procedure.
+        selected = cifp_reader::approach_for_type(
+            ctx.cifp_dir,
+            destination,
+            runway,
+            "ILS");
+
+        if (selected.type_str.empty())
+          selected = cifp_reader::best_approach(
+              ctx.cifp_dir,
+              destination,
+              runway,
+              ctx.visibility_m);
+      }
+    }
+
+    char response[224];
+
+    if (destination.empty() || runway.empty()) {
+      std::snprintf(
+          response, sizeof(response),
+          "%s, unable, destination runway is not available.",
+          callsign.c_str());
+    } else if (wants_visual && ctx.visibility_m < 5000.0f) {
+      std::snprintf(
+          response, sizeof(response),
+          "%s, unable visual approach due visibility, expect instrument "
+          "approach runway %s.",
+          callsign.c_str(),
+          runway.c_str());
+    } else if (!wants_visual && selected.type_str.empty()) {
+      std::snprintf(
+          response, sizeof(response),
+          "%s, unable %s approach runway %s, procedure not available.",
+          callsign.c_str(),
+          requested_type.empty() ? "requested" : requested_type.c_str(),
+          runway.c_str());
+    } else {
+      s_assigned_dest_icao = destination;
+      s_assigned_landing_runway = runway;
+      s_pilot_requested_visual_approach = wants_visual;
+
+      if (!selected.designator.empty())
+        s_assigned_approach_designator =
+            selected.designator;
+
+      atc_state_machine::set_assigned_runway(runway);
+
+      // Force the approach path to be rebuilt from the new assignment.
+      s_approach_waypoints.clear();
+      s_approach_waypoint_idx = 0;
+      s_approach_faf = {};
+      s_approach_final_issued = false;
+      s_approach_cleared_issued = false;
+      s_approach_tower_handed_off = false;
+
+      if (wants_visual) {
+        std::snprintf(
+            response, sizeof(response),
+            "%s, visual approach runway %s approved, report runway in sight.",
+            callsign.c_str(),
+            runway.c_str());
+      } else {
+        std::snprintf(
+            response, sizeof(response),
+            "%s, %s approach runway %s approved.",
+            callsign.c_str(),
+            selected.type_str.c_str(),
+            runway.c_str());
+      }
+
+      atc_state_machine::cancel_readback();
+      atc_state_machine::arm_readback(response);
+
+      logging::info(
+          "IFR: pilot approach request approved type=%s runway=%s "
+          "designator=%s visual=%d",
+          wants_visual ? "VISUAL" : selected.type_str.c_str(),
+          runway.c_str(),
+          selected.designator.c_str(),
+          wants_visual ? 1 : 0);
+    }
+
+    out_request.response_text = response;
+    done(std::move(out_request));
+    return;
+  }
+
   // IFR en-route pilot-requested direct-to.
   //
   // The requested fix must be part of the remaining SimBrief route. This
@@ -2214,7 +2379,8 @@ void process_transcript(Input in, Done done) {
         parsed.intent == PI::REQUEST_DESCENT   ||
         parsed.intent == PI::REQUEST_LEVEL_CHANGE ||
         parsed.intent == PI::REQUEST_DIRECT       ||
-        parsed.intent == PI::REQUEST_EXPECTED_APPROACH;
+        parsed.intent == PI::REQUEST_EXPECTED_APPROACH ||
+        parsed.intent == PI::REQUEST_APPROACH_TYPE;
     if (!escape_intent) {
       // Extract expected frequency from the pending clearance text.
       bool auto_cleared = false;
