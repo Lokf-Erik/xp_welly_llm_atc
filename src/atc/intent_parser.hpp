@@ -69,6 +69,7 @@ enum class PilotIntent {
   REQUEST_DIRECT,       // "request direct BULOL" / "direct Delta Hotel Six One Five"
   REQUEST_DESCENT,       // "request descent" / "ready to descend" — IFR en-route
   REQUEST_HIGHER,        // "request higher" / "for higher" — IFR en-route climb request
+  REQUEST_EXPECTED_APPROACH, // "advise expected runway and approach"
 };
 
 struct PilotMessage {
