@@ -1423,10 +1423,19 @@ void update() {
     }
   }
 
-  // CIFP-derived SID name and binding minimum altitude for the active runway.
   // Both are cached in cifp_reader, so the file is only read on first query
-  // per airport+runway combination.
-  if (!ctx.cifp_dir.empty() && !ctx.nearest_airport_id.empty() &&
+  // per airport+runway combination. Once the aircraft reaches the destination,
+  // nearest_airport_id refers to the arrival airport; never apply the filed
+  // departure SID to that airport or its landing runway.
+  const auto sid_ofp = simbrief_ofp::get();
+  const bool at_ifr_origin =
+      !sid_ofp.valid ||
+      sid_ofp.origin_icao.empty() ||
+      sid_ofp.origin_icao == ctx.nearest_airport_id;
+
+  if (at_ifr_origin &&
+      !ctx.cifp_dir.empty() &&
+      !ctx.nearest_airport_id.empty() &&
       !ctx.active_runway.empty()) {
     // SID resolution — three-step search when FPL first fix is known:
     // 1. Exact last-fix match on active runway (fastest, most precise).
