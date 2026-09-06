@@ -26,6 +26,8 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <limits>
+#include <queue>
 #include <sstream>
 #include <string>
 #include <sys/stat.h>
@@ -379,6 +381,210 @@ std::string nearest_taxiway_phrase(const std::string &icao,
     return std::string("via ") + kPhoneticLetters[name[0] - 'A'];
   // Multi-character name (e.g. "T1", "GA") — use as-is.
   return "via " + name;
+}
+
+std::string taxi_route_phrase(const std::string &icao, double lat, double lon,
+                              const std::string &runway) {
+  if (!towered_cache_ready_ || runway.empty())
+    return {};
+
+  auto edge_it = taxiway_midpoint_cache_.find(icao);
+  auto hold_it = holding_cache_.find(icao);
+  auto rwy_it = runway_cache_.find(icao);
+
+  if (edge_it == taxiway_midpoint_cache_.end() ||
+      hold_it == holding_cache_.end() ||
+      rwy_it == runway_cache_.end())
+    return {};
+
+  auto label_it = hold_it->second.find(runway);
+  if (label_it == hold_it->second.end() || label_it->second.empty())
+    return {};
+
+  double threshold_lat = 0.0;
+  double threshold_lon = 0.0;
+  bool have_threshold = false;
+
+  for (const auto &rw : rwy_it->second) {
+    if (rw.end1.number == runway) {
+      threshold_lat = rw.end1.lat;
+      threshold_lon = rw.end1.lon;
+      have_threshold = true;
+      break;
+    }
+
+    if (rw.end2.number == runway) {
+      threshold_lat = rw.end2.lat;
+      threshold_lon = rw.end2.lon;
+      have_threshold = true;
+      break;
+    }
+  }
+
+  if (!have_threshold)
+    return {};
+
+  struct Node {
+    double lat = 0.0;
+    double lon = 0.0;
+  };
+
+  struct Arc {
+    int to = -1;
+    double metres = 0.0;
+    std::string label;
+  };
+
+  std::vector<Node> nodes;
+  std::vector<std::vector<Arc>> graph;
+
+  auto node_index = [&](double node_lat, double node_lon) {
+    for (int i = 0; i < static_cast<int>(nodes.size()); ++i) {
+      if (std::fabs(nodes[i].lat - node_lat) < 1e-9 &&
+          std::fabs(nodes[i].lon - node_lon) < 1e-9)
+        return i;
+    }
+
+    nodes.push_back({node_lat, node_lon});
+    graph.emplace_back();
+    return static_cast<int>(nodes.size()) - 1;
+  };
+
+  for (const auto &edge : edge_it->second) {
+    const int from = node_index(edge.from_lat, edge.from_lon);
+    const int to = node_index(edge.to_lat, edge.to_lon);
+
+    const double metres = haversine_distance(
+        edge.from_lat, edge.from_lon, edge.to_lat, edge.to_lon);
+
+    graph[from].push_back({to, metres, edge.name});
+    graph[to].push_back({from, metres, edge.name});
+  }
+
+  if (nodes.empty())
+    return {};
+
+  int start = -1;
+  double start_distance = std::numeric_limits<double>::max();
+
+  for (int i = 0; i < static_cast<int>(nodes.size()); ++i) {
+    const double distance =
+        haversine_distance(lat, lon, nodes[i].lat, nodes[i].lon);
+
+    if (distance < start_distance) {
+      start_distance = distance;
+      start = i;
+    }
+  }
+
+  // If the closest graph node is too far away, the airport data does not
+  // provide a usable connection from the aircraft's parking position.
+  if (start < 0 || start_distance > 750.0)
+    return {};
+
+  int target = -1;
+  double target_distance = std::numeric_limits<double>::max();
+
+  for (int i = 0; i < static_cast<int>(nodes.size()); ++i) {
+    bool carries_holding_label = false;
+
+    for (const auto &arc : graph[i]) {
+      if (arc.label == label_it->second) {
+        carries_holding_label = true;
+        break;
+      }
+    }
+
+    if (!carries_holding_label)
+      continue;
+
+    const double distance =
+        haversine_distance(nodes[i].lat, nodes[i].lon,
+                           threshold_lat, threshold_lon);
+
+    if (distance < target_distance) {
+      target_distance = distance;
+      target = i;
+    }
+  }
+
+  if (target < 0)
+    return {};
+
+  const double infinity = std::numeric_limits<double>::max();
+  std::vector<double> distance(nodes.size(), infinity);
+  std::vector<int> previous(nodes.size(), -1);
+  std::vector<std::string> previous_label(nodes.size());
+
+  using QueueItem = std::pair<double, int>;
+  std::priority_queue<QueueItem, std::vector<QueueItem>,
+                      std::greater<QueueItem>>
+      queue;
+
+  distance[start] = 0.0;
+  queue.push({0.0, start});
+
+  while (!queue.empty()) {
+    const auto current_item = queue.top();
+    queue.pop();
+
+    const double current_distance = current_item.first;
+    const int current = current_item.second;
+
+    if (current_distance != distance[current])
+      continue;
+
+    if (current == target)
+      break;
+
+    for (const auto &arc : graph[current]) {
+      const double candidate = current_distance + arc.metres;
+
+      if (candidate < distance[arc.to]) {
+        distance[arc.to] = candidate;
+        previous[arc.to] = current;
+        previous_label[arc.to] = arc.label;
+        queue.push({candidate, arc.to});
+      }
+    }
+  }
+
+  if (distance[target] == infinity)
+    return {};
+
+  std::vector<std::string> labels;
+
+  for (int node = target; node != start && node >= 0;
+       node = previous[node]) {
+    if (previous[node] < 0)
+      return {};
+
+    if (labels.empty() || labels.back() != previous_label[node])
+      labels.push_back(previous_label[node]);
+  }
+
+  std::reverse(labels.begin(), labels.end());
+
+  if (labels.empty())
+    return {};
+
+  auto spoken = [](const std::string &name) {
+    if (name.size() == 1 && name[0] >= 'A' && name[0] <= 'Z')
+      return std::string(kPhoneticLetters[name[0] - 'A']);
+
+    return name;
+  };
+
+  std::string phrase = "via ";
+
+  for (std::size_t i = 0; i < labels.size(); ++i) {
+    if (i > 0)
+      phrase += (i + 1 == labels.size()) ? " and " : ", ";
+
+    phrase += spoken(labels[i]);
+  }
+
+  return phrase;
 }
 
 static std::string select_active_runway(const std::vector<RunwayInfo> &runways,
