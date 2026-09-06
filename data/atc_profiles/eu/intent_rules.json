@@ -135,8 +135,13 @@
         "request startup",
         "request start up",
         "request start-up",
+        "request pushback",
+        "request push back",
+        "pushback request",
         { "all": ["startup", "pushback"] },
-        { "all": ["start up", "pushback"] }
+        { "all": ["start up", "pushback"] },
+        { "all": ["startup", "push back"] },
+        { "all": ["start up", "push back"] }
       ],
       "none": ["engine running", "engines running"]
     },
