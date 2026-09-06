@@ -1404,6 +1404,142 @@ void process_transcript(Input in, Done done) {
     done(std::move(out_request));
     return;
   }
+    
+  // Pilot-requested radar vector towards the FAF of the assigned approach.
+  // The normal CIFP approach flow resumes as the aircraft reaches the
+  // instrument approach path.
+  const auto vectors_request_state =
+      atc_state_machine::get_state();
+
+  if (parsed.intent == PI::REQUEST_VECTORS &&
+      (vectors_request_state ==
+           atc_state_machine::ATCState::IFR_ENROUTE_CRUISE ||
+       vectors_request_state ==
+           atc_state_machine::ATCState::IFR_DESCENT ||
+       vectors_request_state ==
+           atc_state_machine::ATCState::IFR_ARRIVAL ||
+       vectors_request_state ==
+           atc_state_machine::ATCState::IFR_APPROACH_CONTACT ||
+       vectors_request_state ==
+           atc_state_machine::ATCState::IFR_APPROACH_DESCENT)) {
+    Output out_vectors;
+    out_vectors.parsed = parsed;
+
+    const std::string &session_cs =
+        atc_state_machine::session_callsign();
+    const std::string callsign =
+        session_cs.empty() ? in.pilot_callsign : session_cs;
+
+    const auto ofp = simbrief_ofp::get();
+    const std::string destination =
+        !s_assigned_dest_icao.empty()
+            ? s_assigned_dest_icao
+            : (!ctx.ifr_destination.empty()
+                   ? ctx.ifr_destination
+                   : ofp.destination_icao);
+
+    std::string runway =
+        !s_assigned_landing_runway.empty()
+            ? s_assigned_landing_runway
+            : parsed.runway;
+
+    if (runway.empty() &&
+        !destination.empty() &&
+        !ctx.cifp_dir.empty()) {
+      runway = cifp_reader::best_runway_for_approach(
+          ctx.cifp_dir,
+          destination,
+          ctx.wind_direction_deg,
+          ctx.visibility_m);
+    }
+
+    cifp_reader::ApproachInfo selected;
+
+    if (!s_assigned_approach_designator.empty()) {
+      selected = cifp_reader::approach_by_designator(
+          ctx.cifp_dir,
+          destination,
+          s_assigned_approach_designator);
+    }
+
+    if (selected.type_str.empty() &&
+        !runway.empty() &&
+        !destination.empty()) {
+      selected = cifp_reader::best_approach(
+          ctx.cifp_dir,
+          destination,
+          runway,
+          ctx.visibility_m);
+    }
+
+    if (!selected.designator.empty()) {
+      s_assigned_dest_icao = destination;
+      s_assigned_approach_designator =
+          selected.designator;
+      s_assigned_landing_runway =
+          selected.runway.empty() ? runway : selected.runway;
+
+      atc_state_machine::set_assigned_runway(
+          s_assigned_landing_runway);
+    }
+
+    const auto faf = cifp_reader::approach_faf(
+        ctx.cifp_dir,
+        destination,
+        s_assigned_approach_designator);
+
+    char response[224];
+
+    if (faf.ident.empty() ||
+        (faf.lat == 0.0 && faf.lon == 0.0)) {
+      std::snprintf(
+          response, sizeof(response),
+          "%s, unable vectors, final approach fix is not available.",
+          callsign.c_str());
+    } else {
+      double heading = traffic_geometry::bearing_deg(
+          ctx.latitude,
+          ctx.longitude,
+          faf.lat,
+          faf.lon);
+
+      int assigned_heading =
+          static_cast<int>(std::round(heading / 5.0)) * 5;
+
+      assigned_heading %= 360;
+      if (assigned_heading <= 0)
+        assigned_heading = 360;
+
+      const std::string approach_name =
+          s_pilot_requested_visual_approach
+              ? "visual"
+              : (selected.type_str.empty()
+                     ? "instrument"
+                     : selected.type_str);
+
+      std::snprintf(
+          response, sizeof(response),
+          "%s, fly heading %03d, vectors for %s approach runway %s.",
+          callsign.c_str(),
+          assigned_heading,
+          approach_name.c_str(),
+          s_assigned_landing_runway.c_str());
+
+      s_approach_faf = faf;
+
+      atc_state_machine::cancel_readback();
+      atc_state_machine::arm_readback(response);
+
+      logging::info(
+          "IFR: vectors requested -> heading %03d to FAF %s",
+          assigned_heading,
+          faf.ident.c_str());
+    }
+
+    out_vectors.response_text = response;
+    done(std::move(out_vectors));
+    return;
+  }
 
   // IFR en-route pilot-requested direct-to.
   //
@@ -2393,7 +2529,8 @@ void process_transcript(Input in, Done done) {
         parsed.intent == PI::REQUEST_LEVEL_CHANGE ||
         parsed.intent == PI::REQUEST_DIRECT       ||
         parsed.intent == PI::REQUEST_EXPECTED_APPROACH ||
-        parsed.intent == PI::REQUEST_APPROACH_TYPE;
+        parsed.intent == PI::REQUEST_APPROACH_TYPE     ||
+        parsed.intent == PI::REQUEST_VECTORS;
     if (!escape_intent) {
       // Extract expected frequency from the pending clearance text.
       bool auto_cleared = false;
