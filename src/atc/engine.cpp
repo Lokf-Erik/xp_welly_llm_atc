@@ -240,6 +240,7 @@ static int  s_iaf_route_idx            = -1; // route idx of IAF (guards against
 static int  s_faf_ap_idx               = -1; // FAF index in s_approach_waypoints
 static int  s_map_ap_idx               = -1; // MAP index (post-MAP = GO_AROUND territory)
 static bool s_approach_has_visual_final = false; // MDA approach: offset final, "runway in sight"
+static bool s_pilot_requested_visual_approach = false;
 
 // IFR SID climb management (IFR_RADAR_CONTACT state).
 static bool s_sid_direct_issued = false;
@@ -352,6 +353,7 @@ void reset() {
   s_faf_ap_idx                = -1;
   s_map_ap_idx                = -1;
   s_approach_has_visual_final = false;
+  s_pilot_requested_visual_approach = false;
   s_assigned_landing_runway.clear();
   s_no_star_direct_iaf.clear();
   s_route_fixes.clear();
@@ -471,6 +473,7 @@ void training_jump_approach() {
   s_faf_ap_idx                = -1;
   s_map_ap_idx                = -1;
   s_approach_has_visual_final = false;
+  s_pilot_requested_visual_approach = false;
   s_no_star_direct_iaf.clear();
   s_route_fixes.clear();
   s_route_fix_idx = 0;
@@ -526,6 +529,7 @@ void training_jump_arrival() {
   s_faf_ap_idx                = -1;
   s_map_ap_idx                = -1;
   s_approach_has_visual_final = false;
+  s_pilot_requested_visual_approach = false;
   s_no_star_direct_iaf.clear();
   s_route_fixes.clear();
   s_route_fix_idx             = 0;
