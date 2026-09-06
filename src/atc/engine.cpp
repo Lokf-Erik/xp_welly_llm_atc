@@ -1142,6 +1142,95 @@ void process_transcript(Input in, Done done) {
 
   using PI = intent_parser::PilotIntent;
 
+  // Pilot asks for advance planning information about the destination
+  // approach. This is advisory only: the final STAR/approach clearance is
+  // still issued by the normal descent/arrival flow and may change with wind.
+  const auto approach_info_state = atc_state_machine::get_state();
+
+  if (parsed.intent == PI::REQUEST_EXPECTED_APPROACH &&
+      (approach_info_state ==
+           atc_state_machine::ATCState::IFR_RADAR_CONTACT ||
+       approach_info_state ==
+           atc_state_machine::ATCState::IFR_ENROUTE_CRUISE ||
+       approach_info_state ==
+           atc_state_machine::ATCState::IFR_DESCENT ||
+       approach_info_state ==
+           atc_state_machine::ATCState::IFR_ARRIVAL ||
+       approach_info_state ==
+           atc_state_machine::ATCState::IFR_APPROACH_CONTACT ||
+       approach_info_state ==
+           atc_state_machine::ATCState::IFR_APPROACH_DESCENT)) {
+    Output out_approach;
+    out_approach.parsed = parsed;
+
+    const std::string &session_cs =
+        atc_state_machine::session_callsign();
+    const std::string callsign =
+        session_cs.empty() ? in.pilot_callsign : session_cs;
+
+    const auto ofp = simbrief_ofp::get();
+    const std::string destination =
+        !ctx.ifr_destination.empty()
+            ? ctx.ifr_destination
+            : ofp.destination_icao;
+
+    std::string runway = s_assigned_landing_runway;
+    cifp_reader::ApproachInfo approach;
+
+    if (!destination.empty() && !ctx.cifp_dir.empty()) {
+      if (runway.empty())
+        runway = cifp_reader::best_runway_for_approach(
+            ctx.cifp_dir, destination, ctx.wind_direction_deg,
+            ctx.visibility_m);
+
+      if (!s_assigned_approach_designator.empty())
+        approach = cifp_reader::approach_by_designator(
+            ctx.cifp_dir, destination,
+            s_assigned_approach_designator);
+
+      if (approach.type_str.empty() &&
+          !ofp.preferred_approach_designator.empty())
+        approach = cifp_reader::approach_by_designator(
+            ctx.cifp_dir, destination,
+            ofp.preferred_approach_designator);
+
+      if (approach.type_str.empty() && !runway.empty())
+        approach = cifp_reader::best_approach(
+            ctx.cifp_dir, destination, runway,
+            ctx.visibility_m);
+
+      if (!approach.runway.empty())
+        runway = approach.runway;
+    }
+
+    char buf[192];
+
+    if (!runway.empty() && !approach.type_str.empty())
+      std::snprintf(
+          buf, sizeof(buf),
+          "%s, expect %s approach runway %s. I will advise any change.",
+          callsign.c_str(), approach.type_str.c_str(),
+          runway.c_str());
+    else if (!runway.empty())
+      std::snprintf(
+          buf, sizeof(buf),
+          "%s, expect runway %s. Approach type not yet available.",
+          callsign.c_str(), runway.c_str());
+    else
+      std::snprintf(
+          buf, sizeof(buf),
+          "%s, expected approach not yet available.",
+          callsign.c_str());
+
+    out_approach.response_text = buf;
+
+    logging::info(
+        "IFR: expected approach request -> %s", buf);
+
+    done(std::move(out_approach));
+    return;
+  }
+    
   // IFR en-route pilot-requested direct-to.
   //
   // The requested fix must be part of the remaining SimBrief route. This
@@ -2120,7 +2209,8 @@ void process_transcript(Input in, Done done) {
         parsed.intent == PI::LEAVING_FREQUENCY ||
         parsed.intent == PI::REQUEST_DESCENT   ||
         parsed.intent == PI::REQUEST_LEVEL_CHANGE ||
-        parsed.intent == PI::REQUEST_DIRECT;
+        parsed.intent == PI::REQUEST_DIRECT       ||
+        parsed.intent == PI::REQUEST_EXPECTED_APPROACH;
     if (!escape_intent) {
       // Extract expected frequency from the pending clearance text.
       bool auto_cleared = false;
