@@ -70,6 +70,8 @@ enum class PilotIntent {
   REQUEST_DESCENT,       // "request descent" / "ready to descend" — IFR en-route
   REQUEST_HIGHER,        // "request higher" / "for higher" — IFR en-route climb request
   REQUEST_EXPECTED_APPROACH, // "advise expected runway and approach"
+  REQUEST_APPROACH_TYPE, // "request ILS/visual approach"
+  REQUEST_VECTORS,       // "request vectors for the approach"
 };
 
 struct PilotMessage {
