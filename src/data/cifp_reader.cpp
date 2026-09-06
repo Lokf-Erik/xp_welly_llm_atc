@@ -776,6 +776,82 @@ ApproachInfo best_approach(const std::string &cifp_dir,
   return best;
 }
 
+ApproachInfo approach_for_type(const std::string &cifp_dir,
+                               const std::string &icao,
+                               const std::string &dest_runway,
+                               const std::string &requested_type) {
+  if (cifp_dir.empty() || icao.empty() || dest_runway.empty() ||
+      requested_type.empty())
+    return {};
+
+  std::string wanted = requested_type;
+  std::transform(
+      wanted.begin(), wanted.end(), wanted.begin(),
+      [](unsigned char c) {
+        return static_cast<char>(std::toupper(c));
+      });
+
+  std::ifstream in(make_cifp_path(cifp_dir, icao));
+  if (!in.good())
+    return {};
+
+  int best_suffix_score = -1;
+  ApproachInfo best;
+  std::string line;
+
+  while (std::getline(in, line)) {
+    if (line.size() < 6 ||
+        line.compare(0, 6, "APPCH:") != 0)
+      continue;
+
+    auto fields = split_csv(line);
+    if (fields.size() < 3)
+      continue;
+
+    const std::string designator = trim(fields[2]);
+    char type_char = 0;
+    char suffix = 0;
+    std::string runway;
+
+    if (!parse_approach_designator(
+            designator, type_char, runway, suffix))
+      continue;
+
+    if (runway != dest_runway)
+      continue;
+
+    std::string available_type = approach_type_str(type_char);
+    std::transform(
+        available_type.begin(), available_type.end(),
+        available_type.begin(),
+        [](unsigned char c) {
+          return static_cast<char>(std::toupper(c));
+        });
+
+    if (available_type != wanted)
+      continue;
+
+    const int suffix_score =
+        suffix
+            ? std::toupper(static_cast<unsigned char>(suffix)) - 'A' + 1
+            : 0;
+
+    if (suffix_score > best_suffix_score) {
+      best_suffix_score = suffix_score;
+      best.type_str = approach_type_str(type_char);
+      best.runway = runway;
+      best.designator = designator;
+    }
+  }
+
+  logging::info(
+      "[cifp] %s rwy %s requested %s approach -> %s",
+      icao.c_str(), dest_runway.c_str(), wanted.c_str(),
+      best.designator.empty() ? "(none)" : best.designator.c_str());
+
+  return best;
+}
+
 // ── approach_suffix ─────────────────────────────────────────────────────
 
 // Public accessor: parses the designator and returns the variant letter,
