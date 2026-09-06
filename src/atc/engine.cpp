@@ -1209,7 +1209,12 @@ void process_transcript(Input in, Done done) {
 
     char buf[192];
 
-    if (!runway.empty() && !approach.type_str.empty())
+    if (!runway.empty() && s_pilot_requested_visual_approach)
+      std::snprintf(
+          buf, sizeof(buf),
+          "%s, expect visual approach runway %s. I will advise any change.",
+          callsign.c_str(), runway.c_str());
+    else if (!runway.empty() && !approach.type_str.empty())
       std::snprintf(
           buf, sizeof(buf),
           "%s, expect %s approach runway %s. I will advise any change.",
@@ -1787,8 +1792,16 @@ void process_transcript(Input in, Done done) {
             ctx.wind_direction_deg, ctx.visibility_m);
       if (!rwy.empty()) {
         const auto &ofp_ac = simbrief_ofp::get();
-        cifp_reader::ApproachInfo appr;
-        if (!ofp_ac.preferred_approach_designator.empty())
+            cifp_reader::ApproachInfo appr;
+
+    if (!s_assigned_approach_designator.empty())
+      appr = cifp_reader::approach_by_designator(
+          ctx.cifp_dir,
+          ofp.destination_icao,
+          s_assigned_approach_designator);
+
+    if (appr.type_str.empty() &&
+        !ofp.preferred_approach_designator.empty())
           appr = cifp_reader::approach_by_designator(
               ctx.cifp_dir, s_assigned_dest_icao,
               ofp_ac.preferred_approach_designator);
@@ -4064,8 +4077,13 @@ static bool build_descent_clearance(const xplane_context::XPlaneContext &ctx,
         if (idx >= 0 && idx < 26)
           variant_word = std::string(" ") + nato[idx];
       }
-      approach_phrase = ", expect " + appr.type_str + variant_word +
-                        " approach runway " + appr.runway;
+      if (s_pilot_requested_visual_approach)
+        approach_phrase =
+            ", expect visual approach runway " + appr.runway;
+      else
+        approach_phrase =
+            ", expect " + appr.type_str + variant_word +
+            " approach runway " + appr.runway;
       s_assigned_approach_designator = appr.designator;
       // Lock the ARRIVAL runway now, at the "expect approach runway NN"
       // briefing -- not at the (much later) approach check-in. Until this,
@@ -5775,6 +5793,11 @@ static std::string build_approach_final_alt(const std::string &cs,
 // project_arrival_announcement_model: ONE expect + ONE cleared-approach).
 static std::string approach_clearance_phrase(
     const xplane_context::XPlaneContext &ctx) {
+  if (s_pilot_requested_visual_approach &&
+      !s_assigned_landing_runway.empty())
+    return "visual approach runway " +
+           s_assigned_landing_runway;
+
   if (ctx.cifp_dir.empty() || s_assigned_dest_icao.empty() ||
       s_assigned_approach_designator.empty())
     return "";
@@ -6490,9 +6513,10 @@ bool poll_approach(const xplane_context::XPlaneContext &ctx, float dt,
       // bogus "report runway in sight"). Pilot-requested visual approaches are
       // a separate future feature.
       s_approach_has_visual_final =
-          !s_assigned_approach_designator.empty() &&
+          s_pilot_requested_visual_approach ||
+          (!s_assigned_approach_designator.empty() &&
           !cifp_reader::approach_terminates_at_runway(
-              ctx.cifp_dir, s_assigned_dest_icao, s_assigned_approach_designator);
+              ctx.cifp_dir, s_assigned_dest_icao, s_assigned_approach_designator));
       logging::info("[approach] Tower: designator=%s rwy=%s visual-final(MDA)=%d",
                     s_assigned_approach_designator.c_str(),
                     s_assigned_landing_runway.c_str(),
