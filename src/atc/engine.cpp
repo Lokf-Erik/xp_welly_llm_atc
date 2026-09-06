@@ -6732,11 +6732,72 @@ bool poll_ground_runway_change(const xplane_context::XPlaneContext &ctx,
 
   const std::string &cs = atc_state_machine::session_callsign();
   const std::string &callsign = cs.empty() ? settings::pilot_callsign() : cs;
-  char buf[192];
-  std::snprintf(buf, sizeof(buf),
-                "%s, be advised, active runway is now runway %s, taxi to %s.",
-                callsign.c_str(), ctx.active_runway.c_str(),
-                hp_phrase.c_str());
+    char buf[320];
+
+  // During an IFR departure, a runway change also changes the runway-bound
+  // SID. Re-issue the relevant parts of the clearance instead of merely
+  // changing the taxi instruction; otherwise the pilot departs without
+  // knowing which procedure ATC expects.
+  const auto ofp = simbrief_ofp::get();
+  const bool at_departure =
+      ofp.valid && !ofp.origin_icao.empty() &&
+      ofp.origin_icao == ctx.nearest_airport_id;
+
+  if (at_departure && !ctx.ifr_cifp_sid.empty()) {
+    std::string sid = ctx.ifr_cifp_sid;
+
+    if (sid.size() >= 3 &&
+        std::isdigit(static_cast<unsigned char>(sid[sid.size() - 2])) &&
+        std::isalpha(static_cast<unsigned char>(sid.back()))) {
+      static const char *kNato[] = {
+          "Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot",
+          "Golf", "Hotel", "India", "Juliet", "Kilo", "Lima", "Mike",
+          "November", "Oscar", "Papa", "Quebec", "Romeo", "Sierra",
+          "Tango", "Uniform", "Victor", "Whiskey", "X-ray", "Yankee",
+          "Zulu"};
+
+      const char letter = static_cast<char>(
+          std::toupper(static_cast<unsigned char>(sid.back())));
+
+      sid = sid.substr(0, sid.size() - 2) + " " +
+            sid[sid.size() - 2] + " " + kNato[letter - 'A'];
+    }
+
+    const auto initial = cifp_reader::initial_altitude(
+        ctx.cifp_dir, ctx.nearest_airport_id, ctx.active_runway);
+
+    char altitude[32];
+
+    if (initial.feet > 0 && initial.is_fl)
+      std::snprintf(altitude, sizeof(altitude), "flight level %d",
+                    initial.feet / 100);
+    else
+      std::snprintf(
+          altitude, sizeof(altitude), "%d feet",
+          initial.feet > 0
+              ? initial.feet
+              : flight_phase::get_ifr_defaults().initial_altitude_ft);
+
+    std::snprintf(
+        buf, sizeof(buf),
+        "%s, runway change, amended clearance, runway %s via %s, initial "
+        "climb %s, taxi to %s.",
+        callsign.c_str(), ctx.active_runway.c_str(), sid.c_str(),
+        altitude, hp_phrase.c_str());
+
+    atc_state_machine::cancel_readback();
+    atc_state_machine::arm_readback(buf);
+
+    logging::info(
+        "Ground: IFR runway change -> RW%s SID %s",
+        ctx.active_runway.c_str(), ctx.ifr_cifp_sid.c_str());
+  } else {
+    std::snprintf(
+        buf, sizeof(buf),
+        "%s, be advised, active runway is now runway %s, taxi to %s.",
+        callsign.c_str(), ctx.active_runway.c_str(),
+        hp_phrase.c_str());
+  }
   *out_text = buf;
   logging::info("Ground: active runway changed to %s", ctx.active_runway.c_str());
   return true;
