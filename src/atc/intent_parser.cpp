@@ -828,6 +828,8 @@ const char *intent_name(PilotIntent intent) {
     return "REQUEST_DESCENT";
   case PilotIntent::REQUEST_HIGHER:
     return "REQUEST_HIGHER";
+  case PilotIntent::REQUEST_EXPECTED_APPROACH:
+    return "REQUEST_EXPECTED_APPROACH";
   }
   return "UNKNOWN";
 }
@@ -885,6 +887,7 @@ PilotIntent intent_from_key(const std::string &key) {
       {"REQUEST_DIRECT", PilotIntent::REQUEST_DIRECT},
       {"REQUEST_DESCENT", PilotIntent::REQUEST_DESCENT},
       {"REQUEST_HIGHER", PilotIntent::REQUEST_HIGHER},
+      {"REQUEST_EXPECTED_APPROACH", PilotIntent::REQUEST_EXPECTED_APPROACH},
   };
   auto it = kMap.find(key);
   return it != kMap.end() ? it->second : PilotIntent::UNKNOWN;
