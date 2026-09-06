@@ -4055,9 +4055,19 @@ static bool build_descent_clearance(const xplane_context::XPlaneContext &ctx,
   if (!dest_runway.empty() && !ctx.cifp_dir.empty() &&
       !ofp.destination_icao.empty()) {
     cifp_reader::ApproachInfo appr;
-    if (!ofp.preferred_approach_designator.empty())
-      appr = cifp_reader::approach_by_designator(ctx.cifp_dir, ofp.destination_icao,
-                                                 ofp.preferred_approach_designator);
+
+    if (!s_assigned_approach_designator.empty())
+      appr = cifp_reader::approach_by_designator(
+          ctx.cifp_dir,
+          ofp.destination_icao,
+          s_assigned_approach_designator);
+
+    if (appr.type_str.empty() &&
+        !ofp.preferred_approach_designator.empty())
+      appr = cifp_reader::approach_by_designator(
+          ctx.cifp_dir,
+          ofp.destination_icao,
+          ofp.preferred_approach_designator);
     if (appr.type_str.empty())
       appr = cifp_reader::best_approach(ctx.cifp_dir, ofp.destination_icao,
                                         dest_runway, ctx.visibility_m);
