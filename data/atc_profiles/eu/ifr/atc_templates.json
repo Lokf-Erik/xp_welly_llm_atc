@@ -44,7 +44,7 @@
     "IFR/CLEARED": {
       "_comment": "Startup approved. Pilot may request taxi or call Ground/Tower. QNH already given in IFR clearance — omitted here.",
       "REQUEST_STARTUP": {
-        "response": "{callsign}, startup approved, call when ready to taxi.",
+        "response": "{callsign}, startup approved{pushback_approval}, report when ready to taxi.",
         "next_state": "IFR/CLEARED",
         "requires_readback": false
       },
