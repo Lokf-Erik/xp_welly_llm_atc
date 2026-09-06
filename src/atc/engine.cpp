@@ -1797,11 +1797,11 @@ void process_transcript(Input in, Done done) {
     if (!s_assigned_approach_designator.empty())
       appr = cifp_reader::approach_by_designator(
           ctx.cifp_dir,
-          ofp.destination_icao,
+          ofp_ac.destination_icao,
           s_assigned_approach_designator);
 
     if (appr.type_str.empty() &&
-        !ofp.preferred_approach_designator.empty())
+        !ofp_ac.preferred_approach_designator.empty())
           appr = cifp_reader::approach_by_designator(
               ctx.cifp_dir, s_assigned_dest_icao,
               ofp_ac.preferred_approach_designator);
