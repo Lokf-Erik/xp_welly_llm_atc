@@ -759,6 +759,18 @@ std::map<std::string, std::string> build_vars(const PilotMessage &msg,
         }
         return "holding point " + name + ", runway " + rwy;
       }()},
+      {"taxi_route", [&]() -> std::string {
+        const std::string route =
+            xplane_context::taxi_route_phrase(
+                ctx.nearest_airport_id,
+                ctx.latitude,
+                ctx.longitude,
+                get_runway(msg, ctx));
+
+        return route.empty()
+                   ? std::string()
+                   : route + ", then ";
+      }()},
   };
 }
 
