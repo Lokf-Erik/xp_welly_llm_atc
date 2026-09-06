@@ -144,6 +144,14 @@ ApproachInfo best_approach(const std::string &cifp_dir,
                             const std::string &dest_runway,
                             float visibility_m = 5000.0f);
 
+// Returns the preferred approach of the explicitly requested type for a
+// runway. `requested_type` uses the spoken names "ILS" or "RNAV".
+// Empty when the airport has no matching published procedure.
+ApproachInfo approach_for_type(const std::string &cifp_dir,
+                               const std::string &icao,
+                               const std::string &dest_runway,
+                               const std::string &requested_type);
+
 // Look up an approach by its exact designator (e.g. "I04LZ").
 // Returns an empty ApproachInfo if not found.
 ApproachInfo approach_by_designator(const std::string &cifp_dir,
